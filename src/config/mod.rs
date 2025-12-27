@@ -38,9 +38,9 @@ impl Default for AudioConfig {
             highs_enabled: true,
             highs_octave_offset: 12,
             highs_note_density: 2,
-            evolution_min_bars: 4,
-            evolution_max_bars: 8,
-            mutation_chance: 0.3,
+            evolution_min_bars: 2,
+            evolution_max_bars: 4,
+            mutation_chance: 0.5,
         }
     }
 }

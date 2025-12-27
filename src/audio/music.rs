@@ -343,14 +343,14 @@ impl ProceduralMusic {
         let mutated = self.melody_gen.mutate_phrase(&current_melody, self.mutation_chance);
         self.melody_track.update_notes(mutated);
 
-        // Occasionally regenerate bass
-        if self.rng.gen_bool(0.3) {
+        // Frequently regenerate bass for variety
+        if self.rng.gen_bool(0.5) {
             let new_bass = self.melody_gen.generate_bass(4, 4);
             self.bass_track.update_notes(new_bass);
         }
 
-        // Occasionally change pattern type entirely
-        if self.rng.gen_bool(0.15) {
+        // Often change pattern type entirely for fresh feel
+        if self.rng.gen_bool(0.4) {
             let pattern_types = [PatternType::Arpeggio, PatternType::Pendulum, PatternType::Random, PatternType::StepUp];
             let pattern = *pattern_types.choose(&mut self.rng).unwrap();
             let new_melody = self.melody_gen.generate_phrase(8, pattern);
