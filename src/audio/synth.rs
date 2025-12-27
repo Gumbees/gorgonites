@@ -137,6 +137,25 @@ impl Envelope {
         }
     }
 
+    pub fn sparkle() -> Self {
+        Self {
+            attack: 0.001,
+            decay: 0.05,
+            sustain: 0.1,
+            release: 0.08,
+        }
+    }
+
+    /// Long atmospheric pad envelope
+    pub fn atmospheric() -> Self {
+        Self {
+            attack: 0.5,
+            decay: 0.3,
+            sustain: 0.6,
+            release: 1.0,
+        }
+    }
+
     /// Get envelope value at a given time since note start
     /// note_duration is how long the note is held before release
     pub fn value_at(&self, time: f32, note_duration: f32) -> f32 {

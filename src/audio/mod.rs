@@ -12,6 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 
+use crate::config::{AudioConfig, GameConfig};
+
 /// Manages audio playback for the game
 pub struct AudioManager {
     _stream: OutputStream,
@@ -19,25 +21,37 @@ pub struct AudioManager {
     music_sink: Option<Sink>,
     music_playing: Arc<AtomicBool>,
     seed: u64,
+    audio_config: AudioConfig,
 }
 
 impl AudioManager {
-    /// Create a new audio manager with a random seed based on current time
+    /// Create a new audio manager with config loaded from file
     pub fn new() -> Result<Self, AudioError> {
+        let config = GameConfig::load("config.ini");
+        Self::with_config(config.audio)
+    }
+
+    /// Create a new audio manager with specific audio config
+    pub fn with_config(audio_config: AudioConfig) -> Result<Self, AudioError> {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(42);
 
-        Self::with_seed(seed)
+        Self::with_config_and_seed(audio_config, seed)
     }
 
-    /// Create a new audio manager with a specific seed (for reproducible music)
-    pub fn with_seed(seed: u64) -> Result<Self, AudioError> {
+    /// Create a new audio manager with specific config and seed
+    pub fn with_config_and_seed(audio_config: AudioConfig, seed: u64) -> Result<Self, AudioError> {
         let (stream, stream_handle) = OutputStream::try_default()
             .map_err(|e| AudioError::OutputStreamError(e.to_string()))?;
 
         tracing::info!("Audio system initialized with seed: {}", seed);
+        tracing::info!("Audio config: bass={}, melody={}, highs={}",
+            audio_config.bass_enabled,
+            audio_config.melody_enabled,
+            audio_config.highs_enabled
+        );
 
         Ok(Self {
             _stream: stream,
@@ -45,6 +59,7 @@ impl AudioManager {
             music_sink: None,
             music_playing: Arc::new(AtomicBool::new(false)),
             seed,
+            audio_config,
         })
     }
 
@@ -56,14 +71,17 @@ impl AudioManager {
 
         match Sink::try_new(&self._stream_handle) {
             Ok(sink) => {
-                let music = ProceduralMusic::new(self.seed);
-                sink.set_volume(0.5);
+                let music = ProceduralMusic::with_config(self.seed, &self.audio_config);
+                sink.set_volume(self.audio_config.master_volume);
                 sink.append(music);
 
                 self.music_sink = Some(sink);
                 self.music_playing.store(true, Ordering::Relaxed);
 
-                tracing::info!("Menu music started");
+                tracing::info!("Menu music started (BPM range: {}-{})",
+                    self.audio_config.min_bpm,
+                    self.audio_config.max_bpm
+                );
             }
             Err(e) => {
                 tracing::warn!("Failed to create audio sink: {}", e);

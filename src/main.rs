@@ -8,6 +8,7 @@ mod rendering;
 mod ui;
 mod assets;
 mod audio;
+mod config;
 
 use game::Game;
 

@@ -11,5 +11,6 @@ pub mod rendering;
 pub mod ui;
 pub mod assets;
 pub mod audio;
+pub mod config;
 
 pub use game::Game;
