@@ -10,5 +10,6 @@ pub mod ai;
 pub mod rendering;
 pub mod ui;
 pub mod assets;
+pub mod audio;
 
 pub use game::Game;

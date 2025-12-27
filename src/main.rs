@@ -7,6 +7,7 @@ mod ai;
 mod rendering;
 mod ui;
 mod assets;
+mod audio;
 
 use game::Game;
 

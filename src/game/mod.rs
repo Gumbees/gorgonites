@@ -8,6 +8,7 @@ mod era;
 pub use state::*;
 pub use era::*;
 
+use crate::audio::AudioManager;
 use crate::ui::{MainMenu, MenuAction};
 
 /// The main game struct holding all state
@@ -32,10 +33,30 @@ pub struct Game {
 
     /// Track if menu needs layout update
     menu_needs_layout: bool,
+
+    /// Audio manager for music and sound
+    audio: Option<AudioManager>,
+
+    /// Previous game state (for detecting transitions)
+    prev_state: GameState,
 }
 
 impl Game {
     pub fn new() -> Self {
+        // Initialize audio (may fail on systems without audio)
+        let mut audio = match AudioManager::new() {
+            Ok(manager) => Some(manager),
+            Err(e) => {
+                tracing::warn!("Audio initialization failed: {}. Continuing without audio.", e);
+                None
+            }
+        };
+
+        // Start menu music immediately
+        if let Some(ref mut audio_manager) = audio {
+            audio_manager.play_menu_music();
+        }
+
         Self {
             state: GameState::MainMenu,
             current_era: Era::StoneAge,
@@ -44,6 +65,8 @@ impl Game {
             world: World::new(),
             main_menu: MainMenu::new(),
             menu_needs_layout: true,
+            audio,
+            prev_state: GameState::MainMenu,
         }
     }
 
@@ -67,6 +90,9 @@ impl Game {
 
     /// Update game logic
     pub fn update(&mut self, dt: f32) {
+        // Handle state transitions for audio
+        self.handle_audio_transitions();
+
         match self.state {
             GameState::MainMenu => {
                 // Layout menu if needed (e.g., on resize)
@@ -104,6 +130,37 @@ impl Game {
                 // Paused - no updates
             }
             _ => {}
+        }
+    }
+
+    /// Handle audio based on game state transitions
+    fn handle_audio_transitions(&mut self) {
+        if self.state == self.prev_state {
+            return;
+        }
+
+        // State changed - handle audio transitions
+        if let Some(ref mut audio) = self.audio {
+            match (self.prev_state, self.state) {
+                // Entering main menu - start music
+                (_, GameState::MainMenu) => {
+                    audio.play_menu_music();
+                }
+                // Leaving main menu - stop music
+                (GameState::MainMenu, _) => {
+                    audio.stop_music();
+                }
+                _ => {}
+            }
+        }
+
+        self.prev_state = self.state;
+    }
+
+    /// Initialize audio (call after entering main menu for first time)
+    pub fn start_menu_music(&mut self) {
+        if let Some(ref mut audio) = self.audio {
+            audio.play_menu_music();
         }
     }
 
