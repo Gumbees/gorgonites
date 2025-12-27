@@ -161,9 +161,50 @@ impl AiClient {
         Err(AiError::NotImplemented("OpenAI provider".to_string()))
     }
 
-    async fn complete_ollama(&self, _prompt: &str, _system: &str) -> Result<String, AiError> {
-        // TODO: Implement Ollama API
-        Err(AiError::NotImplemented("Ollama provider".to_string()))
+    async fn complete_ollama(&self, prompt: &str, system: &str) -> Result<String, AiError> {
+        #[derive(Serialize)]
+        struct OllamaRequest {
+            model: String,
+            prompt: String,
+            system: String,
+            stream: bool,
+        }
+
+        #[derive(Deserialize)]
+        struct OllamaResponse {
+            response: String,
+        }
+
+        let request = OllamaRequest {
+            model: self.config.model.clone(),
+            prompt: prompt.to_string(),
+            system: system.to_string(),
+            stream: false,
+        };
+
+        let response = self
+            .http_client
+            .post(&self.config.endpoint)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AiError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(AiError::ApiError(format!(
+                "Status {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+
+        let parsed: OllamaResponse = response
+            .json()
+            .await
+            .map_err(|e| AiError::ParseError(e.to_string()))?;
+
+        Ok(parsed.response)
     }
 
     async fn complete_custom(&self, _prompt: &str, _system: &str) -> Result<String, AiError> {

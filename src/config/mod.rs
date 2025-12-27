@@ -67,10 +67,34 @@ pub struct GameplayConfig {
     pub difficulty: String,
 }
 
+/// Ollama AI configuration settings
+#[derive(Debug, Clone)]
+pub struct OllamaConfig {
+    pub host: String,
+    pub port: u16,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub timeout: u32,
+    pub enabled: bool,
+}
+
 impl Default for GameplayConfig {
     fn default() -> Self {
         Self {
             difficulty: "normal".to_string(),
+        }
+    }
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: 11434,
+            model: "mistral".to_string(),
+            api_key: None,
+            timeout: 30,
+            enabled: true,
         }
     }
 }
@@ -81,6 +105,7 @@ pub struct GameConfig {
     pub audio: AudioConfig,
     pub graphics: GraphicsConfig,
     pub gameplay: GameplayConfig,
+    pub ollama: OllamaConfig,
 }
 
 impl Default for GameConfig {
@@ -89,6 +114,7 @@ impl Default for GameConfig {
             audio: AudioConfig::default(),
             graphics: GraphicsConfig::default(),
             gameplay: GameplayConfig::default(),
+            ollama: OllamaConfig::default(),
         }
     }
 }
@@ -147,6 +173,22 @@ impl GameConfig {
             }
         }
 
+        // Parse ollama section
+        if let Some(ollama) = ini.section(Some("ollama")) {
+            if let Some(host) = ollama.get("host") {
+                config.ollama.host = host.to_string();
+            }
+            config.ollama.port = parse_u16(ollama.get("port"), config.ollama.port);
+            if let Some(model) = ollama.get("model") {
+                config.ollama.model = model.to_string();
+            }
+            config.ollama.api_key = ollama.get("api_key")
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            config.ollama.timeout = parse_u32(ollama.get("timeout"), config.ollama.timeout);
+            config.ollama.enabled = parse_bool(ollama.get("enabled"), config.ollama.enabled);
+        }
+
         config
     }
 
@@ -181,6 +223,15 @@ impl GameConfig {
         ini.with_section(Some("gameplay"))
             .set("difficulty", &self.gameplay.difficulty);
 
+        // Ollama section
+        ini.with_section(Some("ollama"))
+            .set("host", &self.ollama.host)
+            .set("port", self.ollama.port.to_string())
+            .set("model", &self.ollama.model)
+            .set("api_key", self.ollama.api_key.as_deref().unwrap_or(""))
+            .set("timeout", self.ollama.timeout.to_string())
+            .set("enabled", self.ollama.enabled.to_string());
+
         ini.write_to_file(path.as_ref())
             .map_err(|e| format!("Failed to save config: {}", e))
     }
@@ -191,6 +242,10 @@ fn parse_f32(value: Option<&str>, default: f32) -> f32 {
 }
 
 fn parse_u8(value: Option<&str>, default: u8) -> u8 {
+    value.and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn parse_u16(value: Option<&str>, default: u16) -> u16 {
     value.and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
