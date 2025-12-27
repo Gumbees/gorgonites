@@ -9,6 +9,7 @@ mod ui;
 mod assets;
 mod audio;
 mod config;
+mod sprites;
 
 use game::Game;
 

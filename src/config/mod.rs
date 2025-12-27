@@ -91,7 +91,7 @@ impl Default for OllamaConfig {
         Self {
             host: "localhost".to_string(),
             port: 11434,
-            model: "mistral".to_string(),
+            model: "qwen2.5:7b".to_string(),
             api_key: None,
             timeout: 30,
             enabled: true,

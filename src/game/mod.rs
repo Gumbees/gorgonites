@@ -9,6 +9,8 @@ pub use state::*;
 pub use era::*;
 
 use crate::audio::AudioManager;
+use crate::config::{GameConfig, OllamaConfig};
+use crate::sprites::{SpriteGenerator, SpriteManager, RenderedSprite};
 use crate::ui::{MainMenu, MenuAction};
 
 /// The main game struct holding all state
@@ -39,10 +41,25 @@ pub struct Game {
 
     /// Previous game state (for detecting transitions)
     prev_state: GameState,
+
+    /// AI sprite generator
+    sprite_generator: Option<SpriteGenerator>,
+
+    /// Rendered sprites on screen
+    sprite_manager: SpriteManager,
+
+    /// Last mouse position for tracking movement
+    last_mouse_pos: (f32, f32),
+
+    /// Cooldown timer for sprite generation
+    sprite_cooldown: f32,
 }
 
 impl Game {
     pub fn new() -> Self {
+        // Load config
+        let config = GameConfig::load("config.ini");
+
         // Initialize audio (may fail on systems without audio)
         let mut audio = match AudioManager::new() {
             Ok(manager) => Some(manager),
@@ -57,6 +74,14 @@ impl Game {
             audio_manager.play_menu_music();
         }
 
+        // Initialize sprite generator (may fail if Ollama not available)
+        let sprite_generator = if config.ollama.enabled {
+            Some(SpriteGenerator::new(&config.ollama))
+        } else {
+            tracing::info!("Ollama disabled in config, sprite generation will use fallbacks");
+            None
+        };
+
         Self {
             state: GameState::MainMenu,
             current_era: Era::StoneAge,
@@ -67,6 +92,10 @@ impl Game {
             menu_needs_layout: true,
             audio,
             prev_state: GameState::MainMenu,
+            sprite_generator,
+            sprite_manager: SpriteManager::new(50), // Max 50 sprites on screen
+            last_mouse_pos: (0.0, 0.0),
+            sprite_cooldown: 0.0,
         }
     }
 
@@ -93,6 +122,9 @@ impl Game {
         // Handle state transitions for audio
         self.handle_audio_transitions();
 
+        // Update sprite generation (runs in all states)
+        self.update_sprites(dt);
+
         match self.state {
             GameState::MainMenu => {
                 // Layout menu if needed (e.g., on resize)
@@ -105,11 +137,13 @@ impl Game {
                 match self.main_menu.update(dt) {
                     MenuAction::NewGame => {
                         self.state = GameState::Playing;
+                        self.sprite_manager.clear(); // Clear menu sprites
                         tracing::info!("Starting new game!");
                     }
                     MenuAction::Continue => {
                         // TODO: Load save game
                         self.state = GameState::Playing;
+                        self.sprite_manager.clear();
                         tracing::info!("Continuing game...");
                     }
                     MenuAction::Settings => {
@@ -130,6 +164,43 @@ impl Game {
                 // Paused - no updates
             }
             _ => {}
+        }
+    }
+
+    /// Update sprite generation based on mouse movement
+    fn update_sprites(&mut self, dt: f32) {
+        // Decrease cooldown
+        self.sprite_cooldown = (self.sprite_cooldown - dt).max(0.0);
+
+        // Get current mouse position
+        let (mx, my) = mouse_position();
+
+        // Check if mouse moved significantly
+        let (lx, ly) = self.last_mouse_pos;
+        let dist = ((mx - lx).powi(2) + (my - ly).powi(2)).sqrt();
+
+        // Generate sprite on significant mouse movement (and not on cooldown)
+        if dist > 50.0 && self.sprite_cooldown <= 0.0 {
+            self.last_mouse_pos = (mx, my);
+            self.sprite_cooldown = 0.5; // 0.5 second cooldown between generations
+
+            if let Some(ref mut generator) = self.sprite_generator {
+                generator.request_sprite(mx, my);
+                tracing::debug!("Requested sprite at ({}, {})", mx, my);
+            } else {
+                // No Ollama, generate fallback immediately
+                let mut rng_gen = SpriteGenerator::new(&OllamaConfig::default());
+                let desc = rng_gen.generate_fallback();
+                self.sprite_manager.add(RenderedSprite::new(desc, mx, my));
+            }
+        }
+
+        // Poll for completed sprites
+        if let Some(ref mut generator) = self.sprite_generator {
+            while let Some((desc, x, y)) = generator.poll() {
+                tracing::info!("Generated sprite: {} at ({}, {})", desc.name, x, y);
+                self.sprite_manager.add(RenderedSprite::new(desc, x, y));
+            }
         }
     }
 
@@ -169,17 +240,36 @@ impl Game {
         match self.state {
             GameState::MainMenu => {
                 self.main_menu.render();
+                // Render sprites on top of menu
+                self.sprite_manager.render();
+                self.render_sprite_info();
             }
             GameState::Playing => {
                 self.world.render();
+                self.sprite_manager.render();
                 self.render_hud();
             }
             GameState::Paused => {
                 self.world.render();
+                self.sprite_manager.render();
                 self.render_pause_overlay();
             }
             _ => {}
         }
+    }
+
+    /// Render sprite generation info
+    fn render_sprite_info(&self) {
+        let count = self.sprite_manager.count();
+        let busy = match &self.sprite_generator {
+            Some(gen) => gen.is_busy(),
+            None => false,
+        };
+
+        let status = if busy { "Generating..." } else { "Move mouse to generate" };
+        let info = format!("Sprites: {} | {}", count, status);
+
+        draw_text(&info, 10.0, 20.0, 16.0, Color::from_rgba(200, 200, 200, 200));
     }
 
     fn render_hud(&self) {

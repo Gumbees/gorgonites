@@ -12,5 +12,6 @@ pub mod ui;
 pub mod assets;
 pub mod audio;
 pub mod config;
+pub mod sprites;
 
 pub use game::Game;
