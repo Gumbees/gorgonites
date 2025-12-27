@@ -8,6 +8,8 @@ mod era;
 pub use state::*;
 pub use era::*;
 
+use crate::ui::{MainMenu, MenuAction};
+
 /// The main game struct holding all state
 pub struct Game {
     /// Current game state (menu, playing, paused, etc.)
@@ -24,6 +26,12 @@ pub struct Game {
 
     /// Game world (entities, map, etc.)
     world: World,
+
+    /// Main menu UI
+    main_menu: MainMenu,
+
+    /// Track if menu needs layout update
+    menu_needs_layout: bool,
 }
 
 impl Game {
@@ -34,6 +42,8 @@ impl Game {
             divergence_score: 0.0,
             show_debug: false,
             world: World::new(),
+            main_menu: MainMenu::new(),
+            menu_needs_layout: true,
         }
     }
 
@@ -44,26 +54,49 @@ impl Game {
             self.show_debug = !self.show_debug;
         }
 
-        // Escape to pause/unpause or exit menu
+        // Escape to pause/unpause or return to menu
         if is_key_pressed(KeyCode::Escape) {
             match self.state {
                 GameState::Playing => self.state = GameState::Paused,
                 GameState::Paused => self.state = GameState::Playing,
-                GameState::MainMenu => {}, // Could open quit confirm
+                GameState::MainMenu => {},
                 _ => {},
             }
-        }
-
-        // Temporary: Space to start game from menu
-        if is_key_pressed(KeyCode::Space) && self.state == GameState::MainMenu {
-            self.state = GameState::Playing;
-            tracing::info!("Game started!");
         }
     }
 
     /// Update game logic
     pub fn update(&mut self, dt: f32) {
         match self.state {
+            GameState::MainMenu => {
+                // Layout menu if needed (e.g., on resize)
+                if self.menu_needs_layout {
+                    self.main_menu.layout(false); // TODO: check for save game
+                    self.menu_needs_layout = false;
+                }
+
+                // Update menu and handle actions
+                match self.main_menu.update(dt) {
+                    MenuAction::NewGame => {
+                        self.state = GameState::Playing;
+                        tracing::info!("Starting new game!");
+                    }
+                    MenuAction::Continue => {
+                        // TODO: Load save game
+                        self.state = GameState::Playing;
+                        tracing::info!("Continuing game...");
+                    }
+                    MenuAction::Settings => {
+                        // TODO: Open settings menu
+                        tracing::info!("Settings not yet implemented");
+                    }
+                    MenuAction::Quit => {
+                        tracing::info!("Quitting game...");
+                        std::process::exit(0);
+                    }
+                    MenuAction::None => {}
+                }
+            }
             GameState::Playing => {
                 self.world.update(dt);
             }
@@ -78,7 +111,7 @@ impl Game {
     pub fn render(&self) {
         match self.state {
             GameState::MainMenu => {
-                self.render_main_menu();
+                self.main_menu.render();
             }
             GameState::Playing => {
                 self.world.render();
@@ -90,50 +123,6 @@ impl Game {
             }
             _ => {}
         }
-    }
-
-    fn render_main_menu(&self) {
-        let screen_w = screen_width();
-        let screen_h = screen_height();
-
-        // Title
-        let title = "GORGONITES";
-        let title_size = 64.0;
-        let title_dims = measure_text(title, None, title_size as u16, 1.0);
-        draw_text(
-            title,
-            (screen_w - title_dims.width) / 2.0,
-            screen_h / 3.0,
-            title_size,
-            WHITE,
-        );
-
-        // Subtitle
-        let subtitle = "An AI-Driven Alternate History";
-        let sub_size = 24.0;
-        let sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
-        draw_text(
-            subtitle,
-            (screen_w - sub_dims.width) / 2.0,
-            screen_h / 3.0 + 40.0,
-            sub_size,
-            GRAY,
-        );
-
-        // Start prompt
-        let prompt = "Press SPACE to begin";
-        let prompt_size = 20.0;
-        let prompt_dims = measure_text(prompt, None, prompt_size as u16, 1.0);
-
-        // Pulsing alpha effect
-        let alpha = ((get_time() * 2.0).sin() * 0.5 + 0.5) as f32;
-        draw_text(
-            prompt,
-            (screen_w - prompt_dims.width) / 2.0,
-            screen_h * 2.0 / 3.0,
-            prompt_size,
-            Color::new(1.0, 1.0, 1.0, alpha),
-        );
     }
 
     fn render_hud(&self) {
