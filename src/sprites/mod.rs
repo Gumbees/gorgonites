@@ -4,6 +4,8 @@
 
 mod generator;
 mod renderer;
+mod fog;
 
 pub use generator::*;
 pub use renderer::*;
+pub use fog::*;

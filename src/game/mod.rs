@@ -9,8 +9,8 @@ pub use state::*;
 pub use era::*;
 
 use crate::audio::AudioManager;
-use crate::config::{GameConfig, OllamaConfig};
-use crate::sprites::{SpriteGenerator, SpriteManager, RenderedSprite};
+use crate::config::GameConfig;
+use crate::sprites::{SpriteGenerator, SpriteManager, RenderedSprite, FogSystem};
 use crate::ui::{MainMenu, MenuAction};
 
 /// The main game struct holding all state
@@ -53,6 +53,9 @@ pub struct Game {
 
     /// Cooldown timer for sprite generation
     sprite_cooldown: f32,
+
+    /// 8-bit fog particle system
+    fog_system: FogSystem,
 }
 
 impl Game {
@@ -96,6 +99,7 @@ impl Game {
             sprite_manager: SpriteManager::new(50), // Max 50 sprites on screen
             last_mouse_pos: (0.0, 0.0),
             sprite_cooldown: 0.0,
+            fog_system: FogSystem::new(),
         }
     }
 
@@ -121,6 +125,9 @@ impl Game {
     pub fn update(&mut self, dt: f32) {
         // Handle state transitions for audio
         self.handle_audio_transitions();
+
+        // Fog disabled - too many draw calls causing driver issues
+        // self.fog_system.update(dt);
 
         // Update sprite generation (runs in all states)
         self.update_sprites(dt);
@@ -169,6 +176,11 @@ impl Game {
 
     /// Update sprite generation based on mouse movement
     fn update_sprites(&mut self, dt: f32) {
+        // Update generator state (recheck availability periodically)
+        if let Some(ref mut generator) = self.sprite_generator {
+            generator.update();
+        }
+
         // Decrease cooldown
         self.sprite_cooldown = (self.sprite_cooldown - dt).max(0.0);
 
@@ -180,24 +192,21 @@ impl Game {
         let dist = ((mx - lx).powi(2) + (my - ly).powi(2)).sqrt();
 
         // Generate sprite on significant mouse movement (and not on cooldown)
+        // Only if generator is available and not busy
         if dist > 50.0 && self.sprite_cooldown <= 0.0 {
-            self.last_mouse_pos = (mx, my);
-            self.sprite_cooldown = 0.5; // 0.5 second cooldown between generations
-
             if let Some(ref mut generator) = self.sprite_generator {
-                generator.request_sprite(mx, my);
-                tracing::debug!("Requested sprite at ({}, {})", mx, my);
-            } else {
-                // No Ollama, generate fallback immediately
-                let mut rng_gen = SpriteGenerator::new(&OllamaConfig::default());
-                let desc = rng_gen.generate_fallback();
-                self.sprite_manager.add(RenderedSprite::new(desc, mx, my));
+                // Only request if available and not already generating
+                if generator.request_sprite(mx, my) {
+                    self.last_mouse_pos = (mx, my);
+                    self.sprite_cooldown = 0.3; // Short cooldown - actual wait is for generation to complete
+                    tracing::debug!("Requested sprite at ({}, {})", mx, my);
+                }
             }
         }
 
         // Poll for completed sprites
         if let Some(ref mut generator) = self.sprite_generator {
-            while let Some((desc, x, y)) = generator.poll() {
+            if let Some((desc, x, y)) = generator.poll() {
                 tracing::info!("Generated sprite: {} at ({}, {})", desc.name, x, y);
                 self.sprite_manager.add(RenderedSprite::new(desc, x, y));
             }
@@ -237,11 +246,16 @@ impl Game {
 
     /// Render the current frame
     pub fn render(&self) {
+        // Fog disabled - too many draw calls causing driver issues
+        // self.fog_system.render();
+
         match self.state {
             GameState::MainMenu => {
-                self.main_menu.render();
-                // Render sprites on top of menu
+                // Render sprites BEHIND the menu
                 self.sprite_manager.render();
+                // Then render menu on top
+                self.main_menu.render();
+                // Render status info on top of everything
                 self.render_sprite_info();
             }
             GameState::Playing => {
@@ -258,18 +272,35 @@ impl Game {
         }
     }
 
-    /// Render sprite generation info
+    /// Render sprite generation info and Ollama status
     fn render_sprite_info(&self) {
         let count = self.sprite_manager.count();
-        let busy = match &self.sprite_generator {
-            Some(gen) => gen.is_busy(),
-            None => false,
-        };
 
-        let status = if busy { "Generating..." } else { "Move mouse to generate" };
-        let info = format!("Sprites: {} | {}", count, status);
-
-        draw_text(&info, 10.0, 20.0, 16.0, Color::from_rgba(200, 200, 200, 200));
+        match &self.sprite_generator {
+            Some(gen) => {
+                if !gen.is_available() {
+                    // Ollama not available - show warning
+                    let warning = if gen.is_checking() {
+                        "Connecting to Ollama..."
+                    } else {
+                        "Ollama not available - waiting for connection"
+                    };
+                    draw_text(warning, 10.0, 20.0, 16.0, Color::from_rgba(255, 200, 100, 230));
+                } else if gen.is_busy() {
+                    // Currently generating
+                    let info = format!("Sprites: {} | Generating...", count);
+                    draw_text(&info, 10.0, 20.0, 16.0, Color::from_rgba(100, 255, 100, 200));
+                } else {
+                    // Ready to generate
+                    let info = format!("Sprites: {} | Move mouse to generate", count);
+                    draw_text(&info, 10.0, 20.0, 16.0, Color::from_rgba(200, 200, 200, 200));
+                }
+            }
+            None => {
+                // No generator configured
+                draw_text("Ollama disabled in config", 10.0, 20.0, 16.0, Color::from_rgba(150, 150, 150, 150));
+            }
+        }
     }
 
     fn render_hud(&self) {

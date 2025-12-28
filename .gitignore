@@ -19,6 +19,10 @@ Thumbs.db
 
 # Build artifacts
 *.log
+/logs/
 
 # Asset build cache
 /assets/.cache/
+
+# Claude Code
+.claude/

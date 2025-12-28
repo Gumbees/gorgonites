@@ -26,12 +26,18 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    // Initialize logging
+    // Set up file logging
+    let file_appender = tracing_appender::rolling::daily("logs", "gorgonites.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Initialize logging to both console and file
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
+                .add_directive(tracing::Level::DEBUG.into()),
         )
+        .with_writer(non_blocking)
+        .with_ansi(false) // No color codes in file
         .init();
 
     tracing::info!("Gorgonites starting...");
