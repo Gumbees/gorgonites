@@ -18,9 +18,11 @@ bevy = { version = "0.16", default-features = false, features = [
     "std",
     "async_executor",
     "multi_threaded",
+    "animation", # play KayKit rigged clips; also enables glTF clip parsing
     "bevy_asset",
     "bevy_color",
     "bevy_core_pipeline",
+    "bevy_gltf", # load KayKit CC0 character models (.glb)
     "bevy_gizmos",
     "bevy_log",
     "bevy_pbr",
@@ -34,6 +36,8 @@ bevy = { version = "0.16", default-features = false, features = [
     "bevy_winit",
     "default_font",
     "png",
+    "jpeg", # ambientCG PBR texture maps
+    "hdr",  # Poly Haven equirectangular sky HDRI
     "x11",
 ] }
 

@@ -7,15 +7,16 @@
 
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
+use std::time::Duration;
 
 use bevy::prelude::*;
 
-use crate::game::{BuildingKind, Id, ParticleKind, UnitKind, MAP_H, MAP_W, TILE};
+use crate::game::{BuildingKind, Id, Order, ParticleKind, UnitKind, MAP_H, MAP_W, TILE};
 
 use super::camera::MainCamera;
 use super::input::Selection;
-use super::scene::{sim_to_world, SceneRoot, WORLD};
-use super::sim::Sim;
+use super::scene::{load_tiled_linear, load_tiled_srgb, sim_to_world, Battlefield, WORLD};
+use super::sim::{Sim, WorldSetup};
 use super::AppState;
 
 /// Maps sim ids to their Bevy entities.
@@ -23,37 +24,138 @@ use super::AppState;
 pub struct EntityIndex {
     units: HashMap<Id, Entity>,
     buildings: HashMap<Id, Entity>,
+    /// Sim id -> the `AnimationPlayer` entity inside that unit's glTF scene.
+    players: HashMap<Id, Entity>,
 }
 
 /// Prebuilt meshes/materials so per-frame sync never touches the asset store.
 #[derive(Resource)]
 pub struct Assets3d {
+    /// glTF character models (KayKit, CC0) per unit line — the real 3D units.
+    unit_scene: HashMap<UnitKind, Handle<Scene>>,
+    /// Primitive fallback meshes for unit lines without a model (e.g. siege).
     unit_mesh: HashMap<UnitKind, Handle<Mesh>>,
     building_mesh: HashMap<BuildingKind, Handle<Mesh>>,
-    citizen_mat: Vec<Handle<StandardMaterial>>,
     military_mat: Vec<Handle<StandardMaterial>>,
     building_mat: HashMap<(BuildingKind, usize), Handle<StandardMaterial>>,
     scaffold_mat: Handle<StandardMaterial>,
+    /// Thin nation-coloured "team disc" placed under each unit.
+    team_disc_mesh: Handle<Mesh>,
+    team_disc_mat: Vec<Handle<StandardMaterial>>,
 }
+
+/// Which KayKit character model represents each unit line, and how tall the
+/// model stands (Bevy units) so we can scale it to the battlefield.
+fn unit_model(kind: UnitKind) -> Option<(&'static str, f32)> {
+    match kind {
+        UnitKind::Citizen => Some(("models/units/Rogue_Hooded.glb#Scene0", 1.8)),
+        UnitKind::Infantry => Some(("models/units/Knight.glb#Scene0", 1.8)),
+        UnitKind::Ranged => Some(("models/units/Rogue.glb#Scene0", 1.8)),
+        UnitKind::Cavalry => Some(("models/units/Barbarian.glb#Scene0", 1.9)),
+        UnitKind::Siege => None, // procedural fallback mesh
+    }
+}
+
+/// Target on-field height for a unit line (Bevy units).
+fn unit_field_height(kind: UnitKind) -> f32 {
+    match kind {
+        UnitKind::Citizen => 2.0,
+        UnitKind::Infantry => 2.3,
+        UnitKind::Ranged => 2.1,
+        UnitKind::Cavalry => 2.7,
+        UnitKind::Siege => 1.4,
+    }
+}
+
+/// KayKit animation clip indices. All four character glbs ship the identical
+/// 76-clip library, so one index maps a named clip across every model.
+mod clip {
+    pub const IDLE: usize = 36; // "Idle"
+    pub const WALK: usize = 72; // "Walking_A"
+    pub const RUN: usize = 48; // "Running_A"
+    pub const MELEE: usize = 0; // "1H_Melee_Attack_Chop"
+    pub const SHOOT: usize = 6; // "1H_Ranged_Shoot"
+}
+
+/// (move, attack) clip indices per unit line. Cavalry runs; the archer shoots.
+fn unit_move_attack_clips(kind: UnitKind) -> (usize, usize) {
+    match kind {
+        UnitKind::Citizen => (clip::WALK, clip::MELEE),
+        UnitKind::Infantry => (clip::WALK, clip::MELEE),
+        UnitKind::Ranged => (clip::WALK, clip::SHOOT),
+        UnitKind::Cavalry => (clip::RUN, clip::MELEE),
+        UnitKind::Siege => (clip::WALK, clip::MELEE), // no model; unused
+    }
+}
+
+/// The three animation states a unit can be shown in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnitClip {
+    Idle,
+    Walk,
+    Attack,
+}
+
+/// A per-unit-line animation graph plus the node handles for its three clips.
+struct ClipSet {
+    graph: Handle<AnimationGraph>,
+    idle: AnimationNodeIndex,
+    walk: AnimationNodeIndex,
+    attack: AnimationNodeIndex,
+}
+
+/// Prebuilt animation graphs keyed by unit line, loaded once with the models.
+#[derive(Resource, Default)]
+struct UnitAnims {
+    sets: HashMap<UnitKind, ClipSet>,
+}
+
+/// Tags a spawned character scene root with its sim identity, so the animation
+/// driver can locate the `AnimationPlayer` Bevy inserts deep in the glTF scene.
+#[derive(Component)]
+struct UnitVisual {
+    id: Id,
+    kind: UnitKind,
+}
+
+/// Remembers which clip a unit's player is currently crossfading to.
+#[derive(Component, Default)]
+struct AnimState {
+    current: Option<UnitClip>,
+}
+
+/// Debounced movement detection: (last sim pos, seconds held still). The sim
+/// ticks slower than the render frame, so we hold "moving" briefly after the
+/// last position change to avoid walk/idle flicker between ticks.
+#[derive(Resource, Default)]
+struct MoveTracker(HashMap<Id, (Vec2, f32)>);
 
 pub struct SyncPlugin;
 
 impl Plugin for SyncPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EntityIndex>()
-            .add_systems(OnEnter(AppState::Playing), build_assets)
+            .init_resource::<MoveTracker>()
+            .add_systems(OnEnter(AppState::Playing), build_assets.after(WorldSetup))
             .add_systems(OnExit(AppState::Playing), clear_index)
             .add_systems(
                 Update,
-                (sync_units, sync_buildings, draw_overlays)
+                (
+                    sync_units,
+                    sync_buildings,
+                    (attach_unit_animations, drive_unit_animations).chain(),
+                    draw_overlays,
+                )
                     .run_if(in_state(AppState::Playing)),
             );
     }
 }
 
-fn clear_index(mut index: ResMut<EntityIndex>) {
+fn clear_index(mut index: ResMut<EntityIndex>, mut tracker: ResMut<MoveTracker>) {
     index.units.clear();
     index.buildings.clear();
+    index.players.clear();
+    tracker.0.clear();
 }
 
 /// Building footprint side in Bevy units.
@@ -76,8 +178,10 @@ fn building_height(kind: BuildingKind) -> f32 {
 fn build_assets(
     mut commands: Commands,
     sim: Res<Sim>,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     let mut unit_mesh = HashMap::new();
     unit_mesh.insert(
@@ -104,37 +208,55 @@ fn build_assets(
         BuildingKind::OilWell,
     ] {
         let span = building_span(kind) * 0.86;
-        building_mesh.insert(kind, meshes.add(Cuboid::new(span, building_height(kind), span)));
+        let mut mesh = Mesh::from(Cuboid::new(span, building_height(kind), span));
+        // Tangents let the wall normal maps catch the light.
+        let _ = mesh.generate_tangents();
+        building_mesh.insert(kind, meshes.add(mesh));
     }
 
-    let mut citizen_mat = Vec::new();
+    // CC0 PBR wall textures (ambientCG), one surface per building family.
+    let stone_col = load_tiled_srgb(&asset_server, "textures/stone/color.jpg");
+    let stone_nrm = load_tiled_linear(&asset_server, "textures/stone/normal.jpg");
+    let wood_col = load_tiled_srgb(&asset_server, "textures/wood/color.jpg");
+    let wood_nrm = load_tiled_linear(&asset_server, "textures/wood/normal.jpg");
+    let metal_col = load_tiled_srgb(&asset_server, "textures/metal/color.jpg");
+    let metal_nrm = load_tiled_linear(&asset_server, "textures/metal/normal.jpg");
+
     let mut military_mat = Vec::new();
     let mut building_mat = HashMap::new();
     for (i, nation) in sim.world.nations.iter().enumerate() {
         let c = nation.color;
-        citizen_mat.push(materials.add(StandardMaterial {
-            base_color: Color::srgb(c[0] * 0.7 + 0.25, c[1] * 0.7 + 0.22, c[2] * 0.7 + 0.16),
-            perceptual_roughness: 0.85,
-            ..Default::default()
-        }));
         military_mat.push(materials.add(StandardMaterial {
             base_color: Color::srgb(c[0], c[1], c[2]),
             perceptual_roughness: 0.7,
             metallic: 0.15,
             ..Default::default()
         }));
-        for (kind, base) in building_base_colors() {
-            // Blend the kind's material colour with a touch of nation tint.
-            let col = Color::srgb(
-                base[0] * 0.78 + c[0] * 0.22,
-                base[1] * 0.78 + c[1] * 0.22,
-                base[2] * 0.78 + c[2] * 0.22,
-            );
+        for kind in [
+            BuildingKind::City,
+            BuildingKind::Farm,
+            BuildingKind::LumberCamp,
+            BuildingKind::Mine,
+            BuildingKind::Market,
+            BuildingKind::University,
+            BuildingKind::Barracks,
+            BuildingKind::OilWell,
+        ] {
+            let (col, nrm, metallic) = match building_surface(kind) {
+                Surface::Stone => (stone_col.clone(), stone_nrm.clone(), 0.0),
+                Surface::Wood => (wood_col.clone(), wood_nrm.clone(), 0.0),
+                Surface::Metal => (metal_col.clone(), metal_nrm.clone(), 0.7),
+            };
+            // A gentle nation tint over the real texture keeps sides readable.
+            let tint = Color::srgb(0.72 + c[0] * 0.4, 0.72 + c[1] * 0.4, 0.72 + c[2] * 0.4);
             building_mat.insert(
                 (kind, i),
                 materials.add(StandardMaterial {
-                    base_color: col,
-                    perceptual_roughness: 0.9,
+                    base_color: tint,
+                    base_color_texture: Some(col),
+                    normal_map_texture: Some(nrm),
+                    perceptual_roughness: 0.85,
+                    metallic,
                     ..Default::default()
                 }),
             );
@@ -148,27 +270,110 @@ fn build_assets(
         ..Default::default()
     });
 
+    // Load the CC0 KayKit character models once.
+    let mut unit_scene = HashMap::new();
+    for kind in [
+        UnitKind::Citizen,
+        UnitKind::Infantry,
+        UnitKind::Ranged,
+        UnitKind::Cavalry,
+    ] {
+        if let Some((path, _)) = unit_model(kind) {
+            unit_scene.insert(kind, asset_server.load(path));
+        }
+    }
+
+    // Build one animation graph per character line: idle / walk / attack clips
+    // loaded straight from the glb (the KayKit clip library is shared, so the
+    // indices in `clip` resolve the same named animation in every model).
+    let mut anim_sets = HashMap::new();
+    for kind in [
+        UnitKind::Citizen,
+        UnitKind::Infantry,
+        UnitKind::Ranged,
+        UnitKind::Cavalry,
+    ] {
+        let Some((scene_path, _)) = unit_model(kind) else {
+            continue;
+        };
+        // Strip the "#Scene0" label to address the glb for animation loading.
+        let base = scene_path.split('#').next().unwrap();
+        let (walk_i, attack_i) = unit_move_attack_clips(kind);
+        let mut graph = AnimationGraph::new();
+        let root = graph.root;
+        let idle = graph.add_clip(
+            asset_server.load(GltfAssetLabel::Animation(clip::IDLE).from_asset(base)),
+            1.0,
+            root,
+        );
+        let walk = graph.add_clip(
+            asset_server.load(GltfAssetLabel::Animation(walk_i).from_asset(base)),
+            1.0,
+            root,
+        );
+        let attack = graph.add_clip(
+            asset_server.load(GltfAssetLabel::Animation(attack_i).from_asset(base)),
+            1.0,
+            root,
+        );
+        anim_sets.insert(
+            kind,
+            ClipSet {
+                graph: graphs.add(graph),
+                idle,
+                walk,
+                attack,
+            },
+        );
+    }
+    commands.insert_resource(UnitAnims { sets: anim_sets });
+
+    // A flat disc under each unit carries its nation colour (the models keep
+    // their own textures, so ownership is read from the team disc).
+    let team_disc_mesh = meshes.add(Cylinder::new(0.7, 0.06));
+    let team_disc_mat: Vec<_> = sim
+        .world
+        .nations
+        .iter()
+        .map(|n| {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(n.color[0], n.color[1], n.color[2]),
+                perceptual_roughness: 0.6,
+                emissive: LinearRgba::rgb(
+                    n.color[0] * 0.2,
+                    n.color[1] * 0.2,
+                    n.color[2] * 0.2,
+                ),
+                ..Default::default()
+            })
+        })
+        .collect();
+
     commands.insert_resource(Assets3d {
+        unit_scene,
         unit_mesh,
         building_mesh,
-        citizen_mat,
         military_mat,
         building_mat,
         scaffold_mat,
+        team_disc_mesh,
+        team_disc_mat,
     });
 }
 
-fn building_base_colors() -> [(BuildingKind, [f32; 3]); 8] {
-    [
-        (BuildingKind::City, [0.52, 0.49, 0.44]),
-        (BuildingKind::Farm, [0.55, 0.47, 0.28]),
-        (BuildingKind::LumberCamp, [0.40, 0.32, 0.22]),
-        (BuildingKind::Mine, [0.44, 0.43, 0.41]),
-        (BuildingKind::Market, [0.56, 0.44, 0.30]),
-        (BuildingKind::University, [0.52, 0.53, 0.58]),
-        (BuildingKind::Barracks, [0.42, 0.38, 0.32]),
-        (BuildingKind::OilWell, [0.24, 0.23, 0.22]),
-    ]
+/// Which real material surfaces a building family.
+enum Surface {
+    Stone,
+    Wood,
+    Metal,
+}
+
+fn building_surface(kind: BuildingKind) -> Surface {
+    match kind {
+        BuildingKind::City | BuildingKind::University | BuildingKind::Mine => Surface::Stone,
+        BuildingKind::OilWell => Surface::Metal,
+        _ => Surface::Wood,
+    }
 }
 
 fn sync_units(
@@ -181,12 +386,22 @@ fn sync_units(
     let w = &sim.world;
     let mut seen: HashMap<Id, ()> = HashMap::new();
 
+    // KayKit characters face +Z in their own space; rotate so they turn to
+    // face their sim heading.
+    const MODEL_YAW: f32 = FRAC_PI_2;
+
     for u in &w.units {
         seen.insert(u.id, ());
         let ground = sim_to_world(&w.map, u.pos.x, u.pos.y);
-        let height = unit_visual_height(u.kind);
-        let pos = ground + Vec3::Y * height * 0.5;
-        let rot = Quat::from_rotation_y(-u.facing + FRAC_PI_2);
+        let model = unit_model(u.kind).is_some();
+        // Character models sit on their feet at ground level; primitive
+        // fallbacks are centred, so lift them by half their height.
+        let pos = if model {
+            ground
+        } else {
+            ground + Vec3::Y * unit_field_height(u.kind) * 0.5
+        };
+        let rot = Quat::from_rotation_y(-u.facing + MODEL_YAW);
 
         match index.units.get(&u.id) {
             Some(&e) => {
@@ -196,19 +411,41 @@ fn sync_units(
                 }
             }
             None => {
-                let mat = if u.kind == UnitKind::Citizen {
-                    assets.citizen_mat[u.nation].clone()
+                let e = if let Some((_, native_h)) = unit_model(u.kind) {
+                    let scale = unit_field_height(u.kind) / native_h;
+                    commands
+                        .spawn((
+                            Battlefield,
+                            UnitVisual {
+                                id: u.id,
+                                kind: u.kind,
+                            },
+                            SceneRoot(assets.unit_scene[&u.kind].clone()),
+                            Transform::from_translation(pos)
+                                .with_rotation(rot)
+                                .with_scale(Vec3::splat(scale)),
+                        ))
+                        .with_children(|p| {
+                            // Counter-scale the disc so it stays a fixed size.
+                            p.spawn((
+                                Mesh3d(assets.team_disc_mesh.clone()),
+                                MeshMaterial3d(assets.team_disc_mat[u.nation].clone()),
+                                Transform::from_translation(Vec3::Y * 0.02 / scale)
+                                    .with_scale(Vec3::splat(1.0 / scale)),
+                            ));
+                        })
+                        .id()
                 } else {
-                    assets.military_mat[u.nation].clone()
+                    // Siege and any other model-less line: primitive fallback.
+                    commands
+                        .spawn((
+                            Battlefield,
+                            Mesh3d(assets.unit_mesh[&u.kind].clone()),
+                            MeshMaterial3d(assets.military_mat[u.nation].clone()),
+                            Transform::from_translation(pos).with_rotation(rot),
+                        ))
+                        .id()
                 };
-                let e = commands
-                    .spawn((
-                        SceneRoot,
-                        Mesh3d(assets.unit_mesh[&u.kind].clone()),
-                        MeshMaterial3d(mat),
-                        Transform::from_translation(pos).with_rotation(rot),
-                    ))
-                    .id();
                 index.units.insert(u.id, e);
             }
         }
@@ -223,16 +460,109 @@ fn sync_units(
             false
         }
     });
+    // Their animation players die with the scene root; drop the stale entries.
+    index.players.retain(|id, _| seen.contains_key(id));
 }
 
-fn unit_visual_height(kind: UnitKind) -> f32 {
-    match kind {
-        UnitKind::Citizen => 1.9,
-        UnitKind::Infantry => 2.3,
-        UnitKind::Ranged => 2.15,
-        UnitKind::Cavalry => 3.0,
-        UnitKind::Siege => 1.4,
+/// When a character scene finishes loading, Bevy inserts an `AnimationPlayer`
+/// deep inside its hierarchy. Wire that player to the right animation graph and
+/// record it so `drive_unit_animations` can steer it by the unit's order.
+fn attach_unit_animations(
+    mut commands: Commands,
+    anims: Res<UnitAnims>,
+    mut index: ResMut<EntityIndex>,
+    new_players: Query<Entity, Added<AnimationPlayer>>,
+    parents: Query<&ChildOf>,
+    visuals: Query<&UnitVisual>,
+) {
+    for player in &new_players {
+        // Climb from the player up to the scene root carrying `UnitVisual`.
+        let mut cur = player;
+        let owner = loop {
+            if let Ok(v) = visuals.get(cur) {
+                break Some(v);
+            }
+            match parents.get(cur) {
+                Ok(c) => cur = c.parent(),
+                Err(_) => break None,
+            }
+        };
+        let Some(vis) = owner else { continue };
+        let Some(set) = anims.sets.get(&vis.kind) else {
+            continue;
+        };
+        commands.entity(player).insert((
+            AnimationGraphHandle(set.graph.clone()),
+            AnimationTransitions::new(),
+            AnimState::default(),
+        ));
+        index.players.insert(vis.id, player);
     }
+}
+
+/// Each frame, pick the clip that matches what the unit is doing and crossfade
+/// to it if it changed. Movement (from the sim) wins over the order so a unit
+/// marching toward an attack target still walks until it stops to strike.
+fn drive_unit_animations(
+    time: Res<Time>,
+    sim: Res<Sim>,
+    anims: Res<UnitAnims>,
+    index: Res<EntityIndex>,
+    mut tracker: ResMut<MoveTracker>,
+    mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions, &mut AnimState)>,
+) {
+    let dt = time.delta_secs();
+    for u in &sim.world.units {
+        let Some(&pe) = index.players.get(&u.id) else {
+            continue;
+        };
+        let Ok((mut player, mut transitions, mut state)) = players.get_mut(pe) else {
+            continue;
+        };
+        let Some(set) = anims.sets.get(&u.kind) else {
+            continue;
+        };
+
+        // Debounced movement: hold "moving" ~0.18s past the last position
+        // change so the walk clip doesn't stutter on frames without a sim tick.
+        let entry = tracker.0.entry(u.id).or_insert((u.pos, f32::INFINITY));
+        if entry.0.distance_squared(u.pos) > 1.0e-5 {
+            entry.0 = u.pos;
+            entry.1 = 0.0;
+        } else {
+            entry.1 += dt;
+        }
+        let moving = entry.1 < 0.18;
+
+        let want = if moving {
+            UnitClip::Walk
+        } else if matches!(u.order, Order::AttackUnit(_) | Order::AttackBuilding(_)) {
+            UnitClip::Attack
+        } else {
+            UnitClip::Idle
+        };
+
+        if state.current != Some(want) {
+            let node = match want {
+                UnitClip::Idle => set.idle,
+                UnitClip::Walk => set.walk,
+                UnitClip::Attack => set.attack,
+            };
+            transitions
+                .play(&mut player, node, Duration::from_millis(220))
+                .repeat();
+            state.current = Some(want);
+        }
+    }
+
+    // Forget trackers for units that are gone so the map can't grow unbounded.
+    tracker.0.retain(|id, _| index.players.contains_key(id));
+}
+
+/// Target on-field height for a unit line (Bevy units) — used for the
+/// primitive fallback offset and health-bar placement.
+fn unit_visual_height(kind: UnitKind) -> f32 {
+    unit_field_height(kind)
 }
 
 fn sync_buildings(
@@ -272,7 +602,7 @@ fn sync_buildings(
             None => {
                 let e = commands
                     .spawn((
-                        SceneRoot,
+                        Battlefield,
                         Mesh3d(assets.building_mesh[&b.kind].clone()),
                         MeshMaterial3d(want_mat),
                         Transform::from_translation(pos).with_scale(scale),

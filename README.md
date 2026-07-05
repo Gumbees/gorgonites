@@ -75,13 +75,19 @@ shadows, tracers and drifting smoke — not saturated cartoon RTS):
 - An **AI opponent nation** runs the same rules: it staffs its economy,
   expands, climbs the ages, and launches attack waves at your capital.
 
-> Art note: the game runs on a real 3D engine (Bevy + PBR). The battlefield
-> is a lit, elevated terrain mesh with water, distance fog, a low warm sun and
-> dynamic shadows, national borders projected onto the ground, and tracer/
-> smoke effects. Units and buildings are currently primitive meshes (capsules,
-> boxes) standing in for real models — the frontend is fully isolated from the
-> simulation, so authored 3D assets drop in without touching gameplay. That
-> asset pass is the remaining step toward full Company of Heroes fidelity.
+> Art note: the game runs on a real 3D engine (Bevy + PBR) with real CC0
+> assets. The battlefield is a normal-mapped, PBR-textured terrain mesh
+> (ambientCG grass) under a Poly Haven sky HDRI, with water, distance fog,
+> bloom, a warm sun with cascaded shadows, scattered low-poly forests and
+> boulders, national borders projected on the ground, and tracer/smoke
+> effects. Buildings are PBR-textured (stone/wood/metal); units are real
+> glTF character models (KayKit, CC0 — knight/rogue/barbarian) on
+> nation-coloured team discs, loaded via a kind→model registry with a
+> primitive fallback. The frontend is fully isolated from the simulation, so
+> more/animated models drop in without touching gameplay — model animation
+> and roofed building models are the remaining steps toward full Company of
+> Heroes fidelity. Bundled assets and their sources are listed in
+> [`assets/CREDITS.md`](./assets/CREDITS.md).
 
 ### 2. Narrative Choices (D&D Layer)
 - AI presents scenarios between/during battles

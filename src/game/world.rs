@@ -117,10 +117,24 @@ pub struct World {
 }
 
 impl World {
+    /// A world on the fixed default map. Deterministic (seed `0xC0FFEE`) — used
+    /// by the sim tests and as a throwaway placeholder before a game starts.
     pub fn new() -> Self {
+        Self::with_seed(0xC0FFEE)
+    }
+
+    /// A world on a fresh, randomly seeded procedural map — a new battlefield
+    /// every time a scenario begins.
+    pub fn new_random() -> Self {
+        Self::with_seed(::rand::random::<u32>())
+    }
+
+    /// Build a world whose terrain, rivers, and biomes are generated from
+    /// `seed`. Same seed in, same map out.
+    pub fn with_seed(seed: u32) -> Self {
         let player_start = (20, 48);
         let enemy_start = (76, 48);
-        let map = GameMap::generate(0xC0FFEE, &[player_start, enemy_start]);
+        let map = GameMap::generate(seed, &[player_start, enemy_start]);
 
         let mut world = Self {
             map,
