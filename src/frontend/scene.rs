@@ -19,7 +19,7 @@ use crate::game::{
     hash01, GameMap, Terrain, World as SimWorld, MAP_H, MAP_W, TILE,
 };
 
-use super::sim::Sim;
+use super::sim::{Sim, WorldSetup};
 use super::AppState;
 
 /// Load a colour (sRGB) texture set to tile/repeat across a surface.
@@ -75,8 +75,11 @@ pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::Playing), setup_scene)
-            .add_systems(OnExit(AppState::Playing), teardown_scene);
+        app.add_systems(
+            OnEnter(AppState::Playing),
+            setup_scene.after(WorldSetup),
+        )
+        .add_systems(OnExit(AppState::Playing), teardown_scene);
     }
 }
 

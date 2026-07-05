@@ -16,7 +16,7 @@ use crate::game::{BuildingKind, Id, Order, ParticleKind, UnitKind, MAP_H, MAP_W,
 use super::camera::MainCamera;
 use super::input::Selection;
 use super::scene::{load_tiled_linear, load_tiled_srgb, sim_to_world, Battlefield, WORLD};
-use super::sim::Sim;
+use super::sim::{Sim, WorldSetup};
 use super::AppState;
 
 /// Maps sim ids to their Bevy entities.
@@ -136,7 +136,7 @@ impl Plugin for SyncPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EntityIndex>()
             .init_resource::<MoveTracker>()
-            .add_systems(OnEnter(AppState::Playing), build_assets)
+            .add_systems(OnEnter(AppState::Playing), build_assets.after(WorldSetup))
             .add_systems(OnExit(AppState::Playing), clear_index)
             .add_systems(
                 Update,
