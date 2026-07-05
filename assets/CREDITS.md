@@ -12,3 +12,11 @@ included here for provenance.
 | `textures/metal/*` | ambientCG — Metal032 | CC0 1.0 |
 
 Sources: https://polyhaven.com · https://ambientcg.com
+
+## Character models
+
+| Asset | Source | License |
+|---|---|---|
+| `models/units/Knight.glb` · `Barbarian.glb` · `Rogue.glb` · `Rogue_Hooded.glb` | KayKit "Adventurers" Character Pack — Kay Lousberg (kaylousberg.com) | CC0 1.0 |
+
+Source: https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0

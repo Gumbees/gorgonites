@@ -69,7 +69,7 @@ pub fn world_to_sim(p: Vec3) -> Vec2 {
 
 /// Marker for the whole battlefield scene so we can tear it down on restart.
 #[derive(Component)]
-pub struct SceneRoot;
+pub struct Battlefield;
 
 pub struct ScenePlugin;
 
@@ -80,7 +80,7 @@ impl Plugin for ScenePlugin {
     }
 }
 
-fn teardown_scene(mut commands: Commands, roots: Query<Entity, With<SceneRoot>>) {
+fn teardown_scene(mut commands: Commands, roots: Query<Entity, With<Battlefield>>) {
     for e in &roots {
         commands.entity(e).despawn();
     }
@@ -97,7 +97,7 @@ fn setup_scene(
 
     // --- Sun: a low, warm key light with long, tightly-fitted shadows ------
     commands.spawn((
-        SceneRoot,
+        Battlefield,
         DirectionalLight {
             color: Color::srgb(1.0, 0.93, 0.80),
             illuminance: 12_500.0,
@@ -137,7 +137,7 @@ fn setup_scene(
         ..Default::default()
     });
     commands.spawn((
-        SceneRoot,
+        Battlefield,
         Mesh3d(sky_mesh),
         MeshMaterial3d(sky_mat),
         NotShadowCaster,
@@ -162,7 +162,7 @@ fn setup_scene(
         ..Default::default()
     });
     commands.spawn((
-        SceneRoot,
+        Battlefield,
         Mesh3d(terrain_mesh),
         MeshMaterial3d(terrain_mat),
         Transform::default(),
@@ -181,7 +181,7 @@ fn setup_scene(
         ..Default::default()
     });
     commands.spawn((
-        SceneRoot,
+        Battlefield,
         Mesh3d(water),
         MeshMaterial3d(water_mat),
         Transform::from_xyz(map_w / 2.0, -1.6 * WORLD, map_h / 2.0),
@@ -252,7 +252,7 @@ fn scatter_vegetation(
                         let ci = (hash01(tx, ty, seed ^ (0x40 + k)) * 3.0) as usize % 3;
                         // Trunk.
                         commands.spawn((
-                            SceneRoot,
+                            Battlefield,
                             Mesh3d(trunk_mesh.clone()),
                             MeshMaterial3d(trunk_mat.clone()),
                             Transform::from_translation(base + Vec3::Y * 0.55 * s)
@@ -260,7 +260,7 @@ fn scatter_vegetation(
                         ));
                         // Canopy.
                         commands.spawn((
-                            SceneRoot,
+                            Battlefield,
                             Mesh3d(canopy_mesh.clone()),
                             MeshMaterial3d(canopy_mats[ci].clone()),
                             Transform::from_translation(base + Vec3::Y * 2.1 * s)
@@ -273,7 +273,7 @@ fn scatter_vegetation(
                         let base = sim_to_world(map, (tx as f32 + 0.5) * TILE, (ty as f32 + 0.5) * TILE);
                         let s = 0.9 + hash01(tx, ty, seed ^ 0x88) * 1.2;
                         commands.spawn((
-                            SceneRoot,
+                            Battlefield,
                             Mesh3d(boulder_mesh.clone()),
                             MeshMaterial3d(boulder_mat.clone()),
                             Transform::from_translation(base + Vec3::Y * 0.3 * s)

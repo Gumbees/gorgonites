@@ -21,6 +21,7 @@ bevy = { version = "0.16", default-features = false, features = [
     "bevy_asset",
     "bevy_color",
     "bevy_core_pipeline",
+    "bevy_gltf", # load KayKit CC0 character models (.glb)
     "bevy_gizmos",
     "bevy_log",
     "bevy_pbr",

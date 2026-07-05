@@ -14,7 +14,7 @@ use crate::game::{BuildingKind, Id, ParticleKind, UnitKind, MAP_H, MAP_W, TILE};
 
 use super::camera::MainCamera;
 use super::input::Selection;
-use super::scene::{load_tiled_linear, load_tiled_srgb, sim_to_world, SceneRoot, WORLD};
+use super::scene::{load_tiled_linear, load_tiled_srgb, sim_to_world, Battlefield, WORLD};
 use super::sim::Sim;
 use super::AppState;
 
@@ -28,12 +28,40 @@ pub struct EntityIndex {
 /// Prebuilt meshes/materials so per-frame sync never touches the asset store.
 #[derive(Resource)]
 pub struct Assets3d {
+    /// glTF character models (KayKit, CC0) per unit line — the real 3D units.
+    unit_scene: HashMap<UnitKind, Handle<Scene>>,
+    /// Primitive fallback meshes for unit lines without a model (e.g. siege).
     unit_mesh: HashMap<UnitKind, Handle<Mesh>>,
     building_mesh: HashMap<BuildingKind, Handle<Mesh>>,
-    citizen_mat: Vec<Handle<StandardMaterial>>,
     military_mat: Vec<Handle<StandardMaterial>>,
     building_mat: HashMap<(BuildingKind, usize), Handle<StandardMaterial>>,
     scaffold_mat: Handle<StandardMaterial>,
+    /// Thin nation-coloured "team disc" placed under each unit.
+    team_disc_mesh: Handle<Mesh>,
+    team_disc_mat: Vec<Handle<StandardMaterial>>,
+}
+
+/// Which KayKit character model represents each unit line, and how tall the
+/// model stands (Bevy units) so we can scale it to the battlefield.
+fn unit_model(kind: UnitKind) -> Option<(&'static str, f32)> {
+    match kind {
+        UnitKind::Citizen => Some(("models/units/Rogue_Hooded.glb#Scene0", 1.8)),
+        UnitKind::Infantry => Some(("models/units/Knight.glb#Scene0", 1.8)),
+        UnitKind::Ranged => Some(("models/units/Rogue.glb#Scene0", 1.8)),
+        UnitKind::Cavalry => Some(("models/units/Barbarian.glb#Scene0", 1.9)),
+        UnitKind::Siege => None, // procedural fallback mesh
+    }
+}
+
+/// Target on-field height for a unit line (Bevy units).
+fn unit_field_height(kind: UnitKind) -> f32 {
+    match kind {
+        UnitKind::Citizen => 2.0,
+        UnitKind::Infantry => 2.3,
+        UnitKind::Ranged => 2.1,
+        UnitKind::Cavalry => 2.7,
+        UnitKind::Siege => 1.4,
+    }
 }
 
 pub struct SyncPlugin;
@@ -119,16 +147,10 @@ fn build_assets(
     let metal_col = load_tiled_srgb(&asset_server, "textures/metal/color.jpg");
     let metal_nrm = load_tiled_linear(&asset_server, "textures/metal/normal.jpg");
 
-    let mut citizen_mat = Vec::new();
     let mut military_mat = Vec::new();
     let mut building_mat = HashMap::new();
     for (i, nation) in sim.world.nations.iter().enumerate() {
         let c = nation.color;
-        citizen_mat.push(materials.add(StandardMaterial {
-            base_color: Color::srgb(c[0] * 0.7 + 0.25, c[1] * 0.7 + 0.22, c[2] * 0.7 + 0.16),
-            perceptual_roughness: 0.85,
-            ..Default::default()
-        }));
         military_mat.push(materials.add(StandardMaterial {
             base_color: Color::srgb(c[0], c[1], c[2]),
             perceptual_roughness: 0.7,
@@ -173,13 +195,49 @@ fn build_assets(
         ..Default::default()
     });
 
+    // Load the CC0 KayKit character models once.
+    let mut unit_scene = HashMap::new();
+    for kind in [
+        UnitKind::Citizen,
+        UnitKind::Infantry,
+        UnitKind::Ranged,
+        UnitKind::Cavalry,
+    ] {
+        if let Some((path, _)) = unit_model(kind) {
+            unit_scene.insert(kind, asset_server.load(path));
+        }
+    }
+
+    // A flat disc under each unit carries its nation colour (the models keep
+    // their own textures, so ownership is read from the team disc).
+    let team_disc_mesh = meshes.add(Cylinder::new(0.7, 0.06));
+    let team_disc_mat: Vec<_> = sim
+        .world
+        .nations
+        .iter()
+        .map(|n| {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(n.color[0], n.color[1], n.color[2]),
+                perceptual_roughness: 0.6,
+                emissive: LinearRgba::rgb(
+                    n.color[0] * 0.2,
+                    n.color[1] * 0.2,
+                    n.color[2] * 0.2,
+                ),
+                ..Default::default()
+            })
+        })
+        .collect();
+
     commands.insert_resource(Assets3d {
+        unit_scene,
         unit_mesh,
         building_mesh,
-        citizen_mat,
         military_mat,
         building_mat,
         scaffold_mat,
+        team_disc_mesh,
+        team_disc_mat,
     });
 }
 
@@ -208,12 +266,22 @@ fn sync_units(
     let w = &sim.world;
     let mut seen: HashMap<Id, ()> = HashMap::new();
 
+    // KayKit characters face +Z in their own space; rotate so they turn to
+    // face their sim heading.
+    const MODEL_YAW: f32 = FRAC_PI_2;
+
     for u in &w.units {
         seen.insert(u.id, ());
         let ground = sim_to_world(&w.map, u.pos.x, u.pos.y);
-        let height = unit_visual_height(u.kind);
-        let pos = ground + Vec3::Y * height * 0.5;
-        let rot = Quat::from_rotation_y(-u.facing + FRAC_PI_2);
+        let model = unit_model(u.kind).is_some();
+        // Character models sit on their feet at ground level; primitive
+        // fallbacks are centred, so lift them by half their height.
+        let pos = if model {
+            ground
+        } else {
+            ground + Vec3::Y * unit_field_height(u.kind) * 0.5
+        };
+        let rot = Quat::from_rotation_y(-u.facing + MODEL_YAW);
 
         match index.units.get(&u.id) {
             Some(&e) => {
@@ -223,19 +291,37 @@ fn sync_units(
                 }
             }
             None => {
-                let mat = if u.kind == UnitKind::Citizen {
-                    assets.citizen_mat[u.nation].clone()
+                let e = if let Some((_, native_h)) = unit_model(u.kind) {
+                    let scale = unit_field_height(u.kind) / native_h;
+                    commands
+                        .spawn((
+                            Battlefield,
+                            SceneRoot(assets.unit_scene[&u.kind].clone()),
+                            Transform::from_translation(pos)
+                                .with_rotation(rot)
+                                .with_scale(Vec3::splat(scale)),
+                        ))
+                        .with_children(|p| {
+                            // Counter-scale the disc so it stays a fixed size.
+                            p.spawn((
+                                Mesh3d(assets.team_disc_mesh.clone()),
+                                MeshMaterial3d(assets.team_disc_mat[u.nation].clone()),
+                                Transform::from_translation(Vec3::Y * 0.02 / scale)
+                                    .with_scale(Vec3::splat(1.0 / scale)),
+                            ));
+                        })
+                        .id()
                 } else {
-                    assets.military_mat[u.nation].clone()
+                    // Siege and any other model-less line: primitive fallback.
+                    commands
+                        .spawn((
+                            Battlefield,
+                            Mesh3d(assets.unit_mesh[&u.kind].clone()),
+                            MeshMaterial3d(assets.military_mat[u.nation].clone()),
+                            Transform::from_translation(pos).with_rotation(rot),
+                        ))
+                        .id()
                 };
-                let e = commands
-                    .spawn((
-                        SceneRoot,
-                        Mesh3d(assets.unit_mesh[&u.kind].clone()),
-                        MeshMaterial3d(mat),
-                        Transform::from_translation(pos).with_rotation(rot),
-                    ))
-                    .id();
                 index.units.insert(u.id, e);
             }
         }
@@ -252,14 +338,10 @@ fn sync_units(
     });
 }
 
+/// Target on-field height for a unit line (Bevy units) — used for the
+/// primitive fallback offset and health-bar placement.
 fn unit_visual_height(kind: UnitKind) -> f32 {
-    match kind {
-        UnitKind::Citizen => 1.9,
-        UnitKind::Infantry => 2.3,
-        UnitKind::Ranged => 2.15,
-        UnitKind::Cavalry => 3.0,
-        UnitKind::Siege => 1.4,
-    }
+    unit_field_height(kind)
 }
 
 fn sync_buildings(
@@ -299,7 +381,7 @@ fn sync_buildings(
             None => {
                 let e = commands
                     .spawn((
-                        SceneRoot,
+                        Battlefield,
                         Mesh3d(assets.building_mesh[&b.kind].clone()),
                         MeshMaterial3d(want_mat),
                         Transform::from_translation(pos).with_scale(scale),
