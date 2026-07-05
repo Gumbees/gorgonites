@@ -49,11 +49,37 @@ High divergence unlocks stranger scenarios. Low divergence lets you "fix" histor
 
 ## Gameplay Pillars
 
-### 1. Strategic Command (RTS Layer)
-- Control units on a 2D battlefield
-- Resource gathering and management
-- Base building appropriate to era
-- Tech tree that branches based on choices, not just research
+### 1. Strategic Command (RTS Layer — Rise of Nations model)
+
+The battle layer plays like **Rise of Nations**, presented with a grounded,
+muted **Company of Heroes**-style art direction (earthy palettes, soft
+shadows, tracers and drifting smoke — not saturated cartoon RTS):
+
+- **National borders** — every city projects territory; borders grow with new
+  cities and each age. You can only construct inside your own borders.
+- **Attrition** — enemy units bleed hit points every second they stand on your
+  soil, scaling with your age. Invasions have a running cost.
+- **Six-resource economy** — Food, Timber, Metal, Wealth, Knowledge, Oil.
+  Citizens staff farms, lumber camps, mines, markets, universities, and oil
+  wells to generate continuous *rates*, clamped per resource by a
+  **commerce cap** that rises with each age.
+- **Ramping costs** — every additional unit of a line costs more, so armies
+  stay mixed and spam stays expensive.
+- **City capture, not destruction** — reduce a city to rubble and it changes
+  flags. Lose your capital and a 60-second countdown starts; retake it or
+  your nation falls. Take the enemy capital and hold it to win.
+- **Eight ages** — advance from the Stone Age to the Divergent timeline at a
+  city. Every age re-skins and upgrades each unit line (Clubman →
+  Legionnaire → Musketeer → Exo Trooper), extends borders, raises the
+  commerce cap, and sharpens attrition.
+- An **AI opponent nation** runs the same rules: it staffs its economy,
+  expands, climbs the ages, and launches attack waves at your capital.
+
+> Art note: the current renderer is stylized 2D with the CoH palette and
+> effects language (per-tile tonal variation, unit shadows, muzzle flashes,
+> smoke on damaged buildings). Photoreal assets are an art-pipeline
+> milestone, not a code one — the renderer isolates presentation so sprites
+> can replace primitives without touching the sim.
 
 ### 2. Narrative Choices (D&D Layer)
 - AI presents scenarios between/during battles
@@ -101,15 +127,20 @@ gorgonites/
 
 ### Phase 1: Foundation
 - [x] Project scaffold
-- [ ] Basic macroquad game loop
+- [x] Basic macroquad game loop
 - [ ] Simple ECS implementation
-- [ ] Placeholder rendering
+- [x] Placeholder rendering (CoH-palette 2D)
 
-### Phase 2: RTS Core
-- [ ] Unit spawning and selection
-- [ ] Movement and pathfinding
-- [ ] Basic combat
-- [ ] Resource system
+### Phase 2: RTS Core (Rise of Nations rules)
+- [x] Unit spawning, drag-select, right-click orders
+- [x] Movement (steering; full pathfinding later) and combat
+- [x] Six-resource commerce-capped economy with citizen workers
+- [x] National borders + build-inside-borders + attrition
+- [x] City capture, capital countdown, victory conditions
+- [x] Eight-age advancement with era-scaled unit lines
+- [x] AI opponent nation (economy, expansion, attack waves)
+- [ ] A* pathfinding and formations
+- [ ] Naval and air units
 
 ### Phase 3: Narrative Engine
 - [ ] AI integration (API calls)
@@ -145,9 +176,20 @@ cd gorgonites
 # Run the game
 cargo run
 
-# Run tests
+# Run tests (headless battle-sim tests included)
 cargo test
 ```
+
+### Controls
+
+| Input | Action |
+|---|---|
+| Left-drag / left-click | Select units / building |
+| Right-click | Move, attack, or assign citizens to a work site |
+| WASD / arrows / middle-drag | Pan camera; scroll to zoom |
+| Selection panel buttons | Train units, place buildings, advance the age |
+| ESC | Pause (or cancel building placement) |
+| F3 | Debug overlay |
 
 ## License
 

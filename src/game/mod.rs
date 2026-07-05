@@ -1,92 +1,155 @@
-//! Core game state and loop management
+//! Core game state and loop management.
+//!
+//! Gameplay is Rise of Nations: national borders, attrition, commerce-capped
+//! economy, age advancement, city capture, capital-loss countdown. The
+//! narrative/divergence layer from the original vision rides on top.
 
 use macroquad::prelude::*;
 
-mod state;
+mod ai_nation;
+mod entities;
 mod era;
+mod interface;
+mod mapgen;
+mod render_world;
+mod state;
+mod world;
 
-pub use state::*;
+pub use entities::*;
 pub use era::*;
+pub use interface::Interface;
+pub use mapgen::{GameMap, Terrain, MAP_H, MAP_W, TILE};
+pub use state::*;
+pub use world::{age_up_cost, Nation, World};
 
-/// The main game struct holding all state
+use crate::rendering::GameCamera;
+
+/// The main game struct holding all state.
 pub struct Game {
-    /// Current game state (menu, playing, paused, etc.)
     pub state: GameState,
-
-    /// Current historical era
+    /// Player nation's era (mirrors `world.nations[0].age`).
     pub current_era: Era,
-
-    /// How far the timeline has diverged from reality (0.0 - 100.0)
+    /// How far the timeline has diverged from reality (0.0 - 100.0).
     pub divergence_score: f32,
-
-    /// Show debug overlay
     pub show_debug: bool,
-
-    /// Game world (entities, map, etc.)
-    world: World,
+    pub world: World,
+    pub camera: GameCamera,
+    pub interface: Interface,
+    /// Set once the battle ends: did the player win?
+    victory: bool,
 }
 
 impl Game {
     pub fn new() -> Self {
+        let world = World::new();
+        let mut camera = GameCamera::new();
+        if let Some(capital) = world.building(world.nations[0].capital) {
+            camera.position = capital.pos;
+        }
         Self {
             state: GameState::MainMenu,
             current_era: Era::StoneAge,
             divergence_score: 0.0,
             show_debug: false,
-            world: World::new(),
+            world,
+            camera,
+            interface: Interface::new(),
+            victory: false,
         }
     }
 
-    /// Handle all input for the current frame
-    pub fn handle_input(&mut self) {
-        // Toggle debug with F3
+    fn restart(&mut self) {
+        self.world = World::new();
+        self.interface = Interface::new();
+        self.victory = false;
+        self.current_era = Era::StoneAge;
+        if let Some(capital) = self.world.building(self.world.nations[0].capital) {
+            self.camera.position = capital.pos;
+        }
+        self.camera.zoom = 1.0;
+    }
+
+    /// Handle all input for the current frame.
+    pub fn handle_input(&mut self, dt: f32) {
         if is_key_pressed(KeyCode::F3) {
             self.show_debug = !self.show_debug;
         }
 
-        // Escape to pause/unpause or exit menu
-        if is_key_pressed(KeyCode::Escape) {
-            match self.state {
-                GameState::Playing => self.state = GameState::Paused,
-                GameState::Paused => self.state = GameState::Playing,
-                GameState::MainMenu => {}, // Could open quit confirm
-                _ => {},
-            }
-        }
-
-        // Temporary: Space to start game from menu
-        if is_key_pressed(KeyCode::Space) && self.state == GameState::MainMenu {
-            self.state = GameState::Playing;
-            tracing::info!("Game started!");
-        }
-    }
-
-    /// Update game logic
-    pub fn update(&mut self, dt: f32) {
         match self.state {
+            GameState::MainMenu => {
+                if is_key_pressed(KeyCode::Space) {
+                    self.restart();
+                    self.state = GameState::Playing;
+                    tracing::info!("Battle started");
+                }
+            }
             GameState::Playing => {
-                self.world.update(dt);
+                if is_key_pressed(KeyCode::Escape) && self.interface.placing.is_none() {
+                    self.state = GameState::Paused;
+                    return;
+                }
+                self.camera.handle_input(dt);
+                if let Some(target) = self.interface.minimap_world_target() {
+                    self.camera.position = target;
+                }
+                self.clamp_camera();
+                self.interface
+                    .handle_input(&mut self.world, &self.camera, dt);
             }
             GameState::Paused => {
-                // Paused - no updates
+                if is_key_pressed(KeyCode::Escape) {
+                    self.state = GameState::Playing;
+                }
+            }
+            GameState::GameOver => {
+                if is_key_pressed(KeyCode::Space) {
+                    self.state = GameState::MainMenu;
+                }
             }
             _ => {}
         }
     }
 
-    /// Render the current frame
-    pub fn render(&self) {
+    fn clamp_camera(&mut self) {
+        let max = vec2(MAP_W as f32 * TILE, MAP_H as f32 * TILE);
+        self.camera.position = self.camera.position.clamp(Vec2::ZERO, max);
+    }
+
+    /// Update game logic.
+    pub fn update(&mut self, dt: f32) {
+        if self.state != GameState::Playing {
+            return;
+        }
+        self.world.update(dt);
+        self.current_era = Era::from_index(self.world.nations[0].age);
+        // Every age climbed past history's pace nudges the timeline.
+        self.divergence_score =
+            (self.world.nations[0].age as f32 * 6.0 + self.world.game_time / 120.0).min(100.0);
+
+        if let Some(winner) = self.world.winner {
+            self.victory = winner == 0;
+            self.state = GameState::GameOver;
+        } else if self.world.nations[0].defeated {
+            self.victory = false;
+            self.state = GameState::GameOver;
+        }
+    }
+
+    /// Render the current frame.
+    pub fn render(&mut self, dt: f32) {
         match self.state {
-            GameState::MainMenu => {
-                self.render_main_menu();
-            }
+            GameState::MainMenu => self.render_main_menu(),
             GameState::Playing => {
-                self.world.render();
-                self.render_hud();
+                render_world::render_world(&self.world, &self.camera);
+                self.interface.draw(&mut self.world, &self.camera, dt);
             }
             GameState::Paused => {
-                self.world.render();
+                render_world::render_world(&self.world, &self.camera);
                 self.render_pause_overlay();
+            }
+            GameState::GameOver => {
+                render_world::render_world(&self.world, &self.camera);
+                self.render_game_over();
             }
             _ => {}
         }
@@ -96,7 +159,6 @@ impl Game {
         let screen_w = screen_width();
         let screen_h = screen_height();
 
-        // Title
         let title = "GORGONITES";
         let title_size = 64.0;
         let title_dims = measure_text(title, None, title_size as u16, 1.0);
@@ -108,8 +170,7 @@ impl Game {
             WHITE,
         );
 
-        // Subtitle
-        let subtitle = "An AI-Driven Alternate History";
+        let subtitle = "Borders. Attrition. Eight ages of war.";
         let sub_size = 24.0;
         let sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
         draw_text(
@@ -120,34 +181,36 @@ impl Game {
             GRAY,
         );
 
-        // Start prompt
-        let prompt = "Press SPACE to begin";
-        let prompt_size = 20.0;
-        let prompt_dims = measure_text(prompt, None, prompt_size as u16, 1.0);
+        let lines = [
+            "Left-drag: select   Right-click: move / attack / assign workers",
+            "Citizens staff farms, camps, mines, markets, universities",
+            "Build only inside your borders. Enemy soil bleeds your troops.",
+            "Capture the enemy capital to win — and hold your own.",
+        ];
+        for (i, line) in lines.iter().enumerate() {
+            let dims = measure_text(line, None, 16, 1.0);
+            draw_text(
+                line,
+                (screen_w - dims.width) / 2.0,
+                screen_h / 2.0 + i as f32 * 22.0,
+                16.0,
+                Color::new(0.65, 0.65, 0.6, 1.0),
+            );
+        }
 
-        // Pulsing alpha effect
+        let prompt = "Press SPACE to begin";
+        let prompt_dims = measure_text(prompt, None, 20, 1.0);
         let alpha = ((get_time() * 2.0).sin() * 0.5 + 0.5) as f32;
         draw_text(
             prompt,
             (screen_w - prompt_dims.width) / 2.0,
-            screen_h * 2.0 / 3.0,
-            prompt_size,
+            screen_h * 3.0 / 4.0,
+            20.0,
             Color::new(1.0, 1.0, 1.0, alpha),
         );
     }
 
-    fn render_hud(&self) {
-        // Era indicator
-        let era_text = format!("{:?}", self.current_era);
-        draw_text(&era_text, 10.0, screen_height() - 30.0, 20.0, WHITE);
-
-        // Divergence meter
-        let div_text = format!("Divergence: {:.1}%", self.divergence_score);
-        draw_text(&div_text, 10.0, screen_height() - 10.0, 16.0, YELLOW);
-    }
-
     fn render_pause_overlay(&self) {
-        // Dim overlay
         draw_rectangle(
             0.0,
             0.0,
@@ -155,69 +218,74 @@ impl Game {
             screen_height(),
             Color::new(0.0, 0.0, 0.0, 0.7),
         );
-
-        // Pause text
         let text = "PAUSED";
-        let size = 48.0;
-        let dims = measure_text(text, None, size as u16, 1.0);
+        let dims = measure_text(text, None, 48, 1.0);
         draw_text(
             text,
             (screen_width() - dims.width) / 2.0,
             screen_height() / 2.0,
-            size,
+            48.0,
             WHITE,
         );
-
         let hint = "Press ESC to resume";
-        let hint_size = 20.0;
-        let hint_dims = measure_text(hint, None, hint_size as u16, 1.0);
+        let hint_dims = measure_text(hint, None, 20, 1.0);
         draw_text(
             hint,
             (screen_width() - hint_dims.width) / 2.0,
             screen_height() / 2.0 + 40.0,
-            hint_size,
+            20.0,
+            GRAY,
+        );
+    }
+
+    fn render_game_over(&self) {
+        draw_rectangle(
+            0.0,
+            0.0,
+            screen_width(),
+            screen_height(),
+            Color::new(0.0, 0.0, 0.0, 0.75),
+        );
+        let (text, color) = if self.victory {
+            ("VICTORY", Color::new(0.7, 0.9, 0.55, 1.0))
+        } else {
+            ("DEFEAT", Color::new(0.9, 0.3, 0.25, 1.0))
+        };
+        let dims = measure_text(text, None, 64, 1.0);
+        draw_text(
+            text,
+            (screen_width() - dims.width) / 2.0,
+            screen_height() / 2.0 - 20.0,
+            64.0,
+            color,
+        );
+        let summary = format!(
+            "Reached {} — {} kills in {:.0} minutes",
+            Era::from_index(self.world.nations[0].age).display_name(),
+            self.world.nations[0].kills,
+            self.world.game_time / 60.0
+        );
+        let sdims = measure_text(&summary, None, 20, 1.0);
+        draw_text(
+            &summary,
+            (screen_width() - sdims.width) / 2.0,
+            screen_height() / 2.0 + 20.0,
+            20.0,
+            Color::new(0.8, 0.8, 0.75, 1.0),
+        );
+        let hint = "Press SPACE for the main menu";
+        let hint_dims = measure_text(hint, None, 20, 1.0);
+        draw_text(
+            hint,
+            (screen_width() - hint_dims.width) / 2.0,
+            screen_height() / 2.0 + 56.0,
+            20.0,
             GRAY,
         );
     }
 }
 
 impl Default for Game {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// The game world containing all entities and state
-pub struct World {
-    // TODO: Add ECS world, map, etc.
-}
-
-impl World {
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    pub fn update(&mut self, _dt: f32) {
-        // TODO: Run game systems
-    }
-
-    pub fn render(&self) {
-        // TODO: Render world
-
-        // Placeholder: draw a simple grid to show something is happening
-        let grid_color = Color::from_rgba(40, 40, 50, 255);
-        let cell_size = 32.0;
-
-        for x in (0..(screen_width() as i32)).step_by(cell_size as usize) {
-            draw_line(x as f32, 0.0, x as f32, screen_height(), 1.0, grid_color);
-        }
-        for y in (0..(screen_height() as i32)).step_by(cell_size as usize) {
-            draw_line(0.0, y as f32, screen_width(), y as f32, 1.0, grid_color);
-        }
-    }
-}
-
-impl Default for World {
     fn default() -> Self {
         Self::new()
     }

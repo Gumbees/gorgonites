@@ -42,14 +42,14 @@ async fn main() {
         let dt = get_frame_time();
 
         // Handle input
-        game.handle_input();
+        game.handle_input(dt);
 
         // Update game state
         game.update(dt);
 
         // Render
-        clear_background(Color::from_rgba(20, 20, 30, 255));
-        game.render();
+        clear_background(Color::from_rgba(20, 20, 24, 255));
+        game.render(dt);
 
         // Debug info (toggle with F3)
         if game.show_debug {
