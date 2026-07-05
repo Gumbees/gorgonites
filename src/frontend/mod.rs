@@ -35,7 +35,7 @@ pub fn run() {
             }),
             ..Default::default()
         }))
-        .insert_resource(ClearColor(Color::srgb(0.055, 0.065, 0.075)))
+        .insert_resource(ClearColor(scene::HORIZON))
         .init_state::<AppState>()
         .add_plugins((
             sim::SimPlugin,

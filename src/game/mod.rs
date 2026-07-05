@@ -15,7 +15,7 @@ mod world;
 
 pub use entities::*;
 pub use era::*;
-pub use mapgen::{GameMap, Terrain, MAP_H, MAP_W, TILE};
+pub use mapgen::{hash01, GameMap, Terrain, MAP_H, MAP_W, TILE};
 pub use world::{
     age_up_cost, Nation, Particle, ParticleKind, Rgb, Rgba, World, CAPITAL_COUNTDOWN,
 };

@@ -5,12 +5,13 @@
 //! sits back and above it, giving the raised, slightly-tilted Company of
 //! Heroes framing rather than a flat top-down.
 
+use bevy::core_pipeline::bloom::Bloom;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 
 use crate::game::{MAP_H, MAP_W, TILE};
 
-use super::scene::WORLD;
+use super::scene::{HORIZON, WORLD};
 use super::AppState;
 
 #[derive(Resource)]
@@ -61,14 +62,25 @@ fn spawn_camera(mut commands: Commands, rts: Res<RtsCamera>) {
     commands.spawn((
         MainCamera,
         Camera3d::default(),
+        // HDR is required for bloom to have highlights to bleed.
+        Camera {
+            hdr: true,
+            ..Default::default()
+        },
         // Filmic, LUT-free tonemapping (the default TonyMcMapFace needs the
         // tonemapping_luts feature we omit for a lean, headless-friendly build).
         Tonemapping::AcesFitted,
+        // Soft glare on the sun disc and bright highlights.
+        Bloom {
+            intensity: 0.18,
+            ..Bloom::NATURAL
+        },
+        // Atmospheric depth: distant terrain fades into the horizon haze.
         DistanceFog {
-            color: Color::srgb(0.62, 0.66, 0.72),
+            color: HORIZON,
             falloff: FogFalloff::Linear {
-                start: 120.0,
-                end: 340.0,
+                start: 90.0,
+                end: 360.0,
             },
             ..Default::default()
         },

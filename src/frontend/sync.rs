@@ -14,7 +14,7 @@ use crate::game::{BuildingKind, Id, ParticleKind, UnitKind, MAP_H, MAP_W, TILE};
 
 use super::camera::MainCamera;
 use super::input::Selection;
-use super::scene::{sim_to_world, SceneRoot, WORLD};
+use super::scene::{load_tiled_linear, load_tiled_srgb, sim_to_world, SceneRoot, WORLD};
 use super::sim::Sim;
 use super::AppState;
 
@@ -76,6 +76,7 @@ fn building_height(kind: BuildingKind) -> f32 {
 fn build_assets(
     mut commands: Commands,
     sim: Res<Sim>,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -104,8 +105,19 @@ fn build_assets(
         BuildingKind::OilWell,
     ] {
         let span = building_span(kind) * 0.86;
-        building_mesh.insert(kind, meshes.add(Cuboid::new(span, building_height(kind), span)));
+        let mut mesh = Mesh::from(Cuboid::new(span, building_height(kind), span));
+        // Tangents let the wall normal maps catch the light.
+        let _ = mesh.generate_tangents();
+        building_mesh.insert(kind, meshes.add(mesh));
     }
+
+    // CC0 PBR wall textures (ambientCG), one surface per building family.
+    let stone_col = load_tiled_srgb(&asset_server, "textures/stone/color.jpg");
+    let stone_nrm = load_tiled_linear(&asset_server, "textures/stone/normal.jpg");
+    let wood_col = load_tiled_srgb(&asset_server, "textures/wood/color.jpg");
+    let wood_nrm = load_tiled_linear(&asset_server, "textures/wood/normal.jpg");
+    let metal_col = load_tiled_srgb(&asset_server, "textures/metal/color.jpg");
+    let metal_nrm = load_tiled_linear(&asset_server, "textures/metal/normal.jpg");
 
     let mut citizen_mat = Vec::new();
     let mut military_mat = Vec::new();
@@ -123,18 +135,31 @@ fn build_assets(
             metallic: 0.15,
             ..Default::default()
         }));
-        for (kind, base) in building_base_colors() {
-            // Blend the kind's material colour with a touch of nation tint.
-            let col = Color::srgb(
-                base[0] * 0.78 + c[0] * 0.22,
-                base[1] * 0.78 + c[1] * 0.22,
-                base[2] * 0.78 + c[2] * 0.22,
-            );
+        for kind in [
+            BuildingKind::City,
+            BuildingKind::Farm,
+            BuildingKind::LumberCamp,
+            BuildingKind::Mine,
+            BuildingKind::Market,
+            BuildingKind::University,
+            BuildingKind::Barracks,
+            BuildingKind::OilWell,
+        ] {
+            let (col, nrm, metallic) = match building_surface(kind) {
+                Surface::Stone => (stone_col.clone(), stone_nrm.clone(), 0.0),
+                Surface::Wood => (wood_col.clone(), wood_nrm.clone(), 0.0),
+                Surface::Metal => (metal_col.clone(), metal_nrm.clone(), 0.7),
+            };
+            // A gentle nation tint over the real texture keeps sides readable.
+            let tint = Color::srgb(0.72 + c[0] * 0.4, 0.72 + c[1] * 0.4, 0.72 + c[2] * 0.4);
             building_mat.insert(
                 (kind, i),
                 materials.add(StandardMaterial {
-                    base_color: col,
-                    perceptual_roughness: 0.9,
+                    base_color: tint,
+                    base_color_texture: Some(col),
+                    normal_map_texture: Some(nrm),
+                    perceptual_roughness: 0.85,
+                    metallic,
                     ..Default::default()
                 }),
             );
@@ -158,17 +183,19 @@ fn build_assets(
     });
 }
 
-fn building_base_colors() -> [(BuildingKind, [f32; 3]); 8] {
-    [
-        (BuildingKind::City, [0.52, 0.49, 0.44]),
-        (BuildingKind::Farm, [0.55, 0.47, 0.28]),
-        (BuildingKind::LumberCamp, [0.40, 0.32, 0.22]),
-        (BuildingKind::Mine, [0.44, 0.43, 0.41]),
-        (BuildingKind::Market, [0.56, 0.44, 0.30]),
-        (BuildingKind::University, [0.52, 0.53, 0.58]),
-        (BuildingKind::Barracks, [0.42, 0.38, 0.32]),
-        (BuildingKind::OilWell, [0.24, 0.23, 0.22]),
-    ]
+/// Which real material surfaces a building family.
+enum Surface {
+    Stone,
+    Wood,
+    Metal,
+}
+
+fn building_surface(kind: BuildingKind) -> Surface {
+    match kind {
+        BuildingKind::City | BuildingKind::University | BuildingKind::Mine => Surface::Stone,
+        BuildingKind::OilWell => Surface::Metal,
+        _ => Surface::Wood,
+    }
 }
 
 fn sync_units(
