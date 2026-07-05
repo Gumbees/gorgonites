@@ -31,6 +31,29 @@ pub enum Era {
 }
 
 impl Era {
+    /// All eras in progression order — the game's eight "ages",
+    /// Rise of Nations style.
+    pub const ALL: [Era; 8] = [
+        Era::StoneAge,
+        Era::BronzeAge,
+        Era::IronAge,
+        Era::Medieval,
+        Era::Renaissance,
+        Era::Industrial,
+        Era::Modern,
+        Era::Divergent,
+    ];
+
+    /// 0-based age index used for stat/cost/border scaling.
+    pub fn index(&self) -> usize {
+        Era::ALL.iter().position(|e| e == self).unwrap_or(0)
+    }
+
+    /// Era for a 0-based age index (clamped to the last age).
+    pub fn from_index(i: usize) -> Era {
+        Era::ALL[i.min(Era::ALL.len() - 1)]
+    }
+
     /// Get the next era in normal progression
     pub fn next(&self) -> Option<Era> {
         match self {
