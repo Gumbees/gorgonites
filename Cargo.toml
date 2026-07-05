@@ -18,6 +18,11 @@ bevy = { version = "0.16", default-features = false, features = [
     "std",
     "async_executor",
     "multi_threaded",
+    # Umbrella "animation" feature — NOT bare "bevy_animation". The latter only
+    # compiles the animation crate; "animation" also turns on
+    # bevy_gltf?/bevy_animation, which is what parses the KayKit clips out of the
+    # glb and attaches the AnimationPlayer. Without it: zero AnimationN labels.
+    "animation",
     "bevy_asset",
     "bevy_color",
     "bevy_core_pipeline",

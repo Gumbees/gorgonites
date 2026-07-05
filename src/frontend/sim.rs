@@ -37,7 +37,7 @@ impl Sim {
 }
 
 /// Fixed sim timestep (seconds). The sim was tuned at ~20 Hz.
-const SIM_DT: f32 = 1.0 / 30.0;
+pub const SIM_DT: f32 = 1.0 / 30.0;
 
 pub struct SimPlugin;
 

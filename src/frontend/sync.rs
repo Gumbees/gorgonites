@@ -7,15 +7,17 @@
 
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
+use std::time::Duration;
 
 use bevy::prelude::*;
+use bevy::scene::SceneInstanceReady;
 
-use crate::game::{BuildingKind, Id, ParticleKind, UnitKind, MAP_H, MAP_W, TILE};
+use crate::game::{BuildingKind, Id, Order, ParticleKind, UnitKind, MAP_H, MAP_W, TILE};
 
 use super::camera::MainCamera;
 use super::input::Selection;
 use super::scene::{load_tiled_linear, load_tiled_srgb, sim_to_world, Battlefield, WORLD};
-use super::sim::Sim;
+use super::sim::{Sim, SIM_DT};
 use super::AppState;
 
 /// Maps sim ids to their Bevy entities.
@@ -41,17 +43,89 @@ pub struct Assets3d {
     team_disc_mat: Vec<Handle<StandardMaterial>>,
 }
 
-/// Which KayKit character model represents each unit line, and how tall the
-/// model stands (Bevy units) so we can scale it to the battlefield.
+/// Which KayKit character model represents each unit line (base `.glb` path,
+/// no label), and how tall the model stands (Bevy units) so we can scale it to
+/// the battlefield. Scene and animation-clip handles are both derived from the
+/// base path via [`GltfAssetLabel`].
 fn unit_model(kind: UnitKind) -> Option<(&'static str, f32)> {
     match kind {
-        UnitKind::Citizen => Some(("models/units/Rogue_Hooded.glb#Scene0", 1.8)),
-        UnitKind::Infantry => Some(("models/units/Knight.glb#Scene0", 1.8)),
-        UnitKind::Ranged => Some(("models/units/Rogue.glb#Scene0", 1.8)),
-        UnitKind::Cavalry => Some(("models/units/Barbarian.glb#Scene0", 1.9)),
+        UnitKind::Citizen => Some(("models/units/Rogue_Hooded.glb", 1.8)),
+        UnitKind::Infantry => Some(("models/units/Knight.glb", 1.8)),
+        UnitKind::Ranged => Some(("models/units/Rogue.glb", 1.8)),
+        UnitKind::Cavalry => Some(("models/units/Barbarian.glb", 1.9)),
         UnitKind::Siege => None, // procedural fallback mesh
     }
 }
+
+/// Animation-clip indices `(idle, moving, attack)` into the shared KayKit rig.
+/// All four unit `.glb`s ship the identical 76-clip set, so idle (`36 Idle`)
+/// and the locomotion clips are shared; only the attack flavour differs per
+/// line. Locomotion: `48 Running_A` for soldiers, `72 Walking_A` for citizens.
+fn unit_clips(kind: UnitKind) -> (usize, usize, usize) {
+    match kind {
+        UnitKind::Citizen => (36, 72, 3), // stroll; 3 = 1H_Melee_Attack_Stab
+        UnitKind::Infantry => (36, 48, 1), // 1 = 1H_Melee_Attack_Slice_Diagonal
+        UnitKind::Ranged => (36, 48, 6),  // 6 = 1H_Ranged_Shoot
+        UnitKind::Cavalry => (36, 48, 0), // 0 = 1H_Melee_Attack_Chop
+        UnitKind::Siege => (36, 48, 0),   // unused: siege has no character model
+    }
+}
+
+/// The three animation states a character can be in, derived from its sim
+/// [`Order`] plus whether it actually moved this frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Clip {
+    Idle,
+    Moving,
+    Attack,
+}
+
+/// Per-unit-line animation graph: one graph holding the three clips, plus the
+/// node index of each so we can cross-fade between them.
+struct KindAnim {
+    graph: Handle<AnimationGraph>,
+    idle: AnimationNodeIndex,
+    moving: AnimationNodeIndex,
+    attack: AnimationNodeIndex,
+}
+
+impl KindAnim {
+    fn node(&self, clip: Clip) -> AnimationNodeIndex {
+        match clip {
+            Clip::Idle => self.idle,
+            Clip::Moving => self.moving,
+            Clip::Attack => self.attack,
+        }
+    }
+}
+
+/// Animation graphs keyed by unit line, built once when a match starts.
+#[derive(Resource, Default)]
+pub struct UnitAnims(HashMap<UnitKind, KindAnim>);
+
+/// Rides on each character's scene-root entity to drive its animation. The
+/// animation rig is wired once the glTF scene finishes spawning (see
+/// [`on_unit_scene_ready`]).
+#[derive(Component)]
+struct AnimAgent {
+    id: Id,
+    kind: UnitKind,
+    /// Entity carrying the `AnimationPlayer` (the scene root itself); `None`
+    /// until the rig is wired.
+    player: Option<Entity>,
+    /// The clip currently playing (or queued for the player once it loads).
+    current: Clip,
+    /// Sim position last frame, to detect locomotion.
+    prev_pos: Vec2,
+    /// Seconds since the unit last moved; debounces the 30 Hz sim against the
+    /// render rate so walking doesn't flicker between sim ticks.
+    still: f32,
+}
+
+/// Cross-fade time between animation states.
+const ANIM_CROSSFADE: Duration = Duration::from_millis(220);
+/// A unit counts as "moving" until it has been still this long.
+const MOVE_LATCH: f32 = 0.14;
 
 /// Target on-field height for a unit line (Bevy units).
 fn unit_field_height(kind: UnitKind) -> f32 {
@@ -69,11 +143,20 @@ pub struct SyncPlugin;
 impl Plugin for SyncPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EntityIndex>()
+            .init_resource::<UnitAnims>()
+            .add_observer(on_unit_scene_ready)
             .add_systems(OnEnter(AppState::Playing), build_assets)
             .add_systems(OnExit(AppState::Playing), clear_index)
             .add_systems(
                 Update,
-                (sync_units, sync_buildings, draw_overlays)
+                (
+                    sync_units,
+                    sync_buildings,
+                    draw_overlays,
+                    // Drive the clip each character plays from sim order + movement.
+                    // (Rig setup happens per-unit via the on_unit_scene_ready observer.)
+                    animate_units,
+                )
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -107,6 +190,7 @@ fn build_assets(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     let mut unit_mesh = HashMap::new();
     unit_mesh.insert(
@@ -195,8 +279,10 @@ fn build_assets(
         ..Default::default()
     });
 
-    // Load the CC0 KayKit character models once.
+    // Load the CC0 KayKit character models once, and build a small animation
+    // graph (idle / moving / attack) per line from the shared clip set.
     let mut unit_scene = HashMap::new();
+    let mut unit_anims = HashMap::new();
     for kind in [
         UnitKind::Citizen,
         UnitKind::Infantry,
@@ -204,9 +290,30 @@ fn build_assets(
         UnitKind::Cavalry,
     ] {
         if let Some((path, _)) = unit_model(kind) {
-            unit_scene.insert(kind, asset_server.load(path));
+            unit_scene.insert(
+                kind,
+                asset_server.load(GltfAssetLabel::Scene(0).from_asset(path)),
+            );
+
+            let (idle, moving, attack) = unit_clips(kind);
+            let (graph, nodes) = AnimationGraph::from_clips([
+                asset_server.load(GltfAssetLabel::Animation(idle).from_asset(path)),
+                asset_server.load(GltfAssetLabel::Animation(moving).from_asset(path)),
+                asset_server.load(GltfAssetLabel::Animation(attack).from_asset(path)),
+            ]);
+            unit_anims.insert(
+                kind,
+                KindAnim {
+                    graph: graphs.add(graph),
+                    idle: nodes[0],
+                    moving: nodes[1],
+                    attack: nodes[2],
+                },
+            );
         }
     }
+    debug!("anim: built {} unit animation graphs", unit_anims.len());
+    commands.insert_resource(UnitAnims(unit_anims));
 
     // A flat disc under each unit carries its nation colour (the models keep
     // their own textures, so ownership is read from the team disc).
@@ -300,6 +407,14 @@ fn sync_units(
                             Transform::from_translation(pos)
                                 .with_rotation(rot)
                                 .with_scale(Vec3::splat(scale)),
+                            AnimAgent {
+                                id: u.id,
+                                kind: u.kind,
+                                player: None,
+                                current: Clip::Idle,
+                                prev_pos: u.pos,
+                                still: MOVE_LATCH,
+                            },
                         ))
                         .with_children(|p| {
                             // Counter-scale the disc so it stays a fixed size.
@@ -336,6 +451,109 @@ fn sync_units(
             false
         }
     });
+}
+
+/// Wire up a character's animation rig the moment its glTF scene finishes
+/// spawning.
+///
+/// With the `animation` cargo feature on, `bevy_gltf` parses the clips and
+/// attaches an [`AnimationPlayer`] (plus the bone `AnimationTarget`s) to the
+/// model's armature root — a descendant of our scene-root entity. We find that
+/// player, give it this line's animation graph, and start it on idle.
+fn on_unit_scene_ready(
+    trigger: Trigger<SceneInstanceReady>,
+    mut commands: Commands,
+    anims: Res<UnitAnims>,
+    mut agents: Query<&mut AnimAgent>,
+    children: Query<&Children>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    let root = trigger.target();
+    let Ok(mut agent) = agents.get_mut(root) else {
+        return;
+    };
+    let Some(kind_anim) = anims.0.get(&agent.kind) else {
+        return;
+    };
+
+    // The glTF loader puts the AnimationPlayer on the armature root somewhere
+    // below us; grab the first one in our subtree.
+    let Some(player_entity) = children.iter_descendants(root).find(|&e| players.contains(e)) else {
+        return;
+    };
+    let Ok(mut player) = players.get_mut(player_entity) else {
+        return;
+    };
+    let mut transitions = AnimationTransitions::new();
+    transitions
+        .play(&mut player, kind_anim.node(agent.current), Duration::ZERO)
+        .repeat();
+    commands.entity(player_entity).insert((
+        AnimationGraphHandle(kind_anim.graph.clone()),
+        transitions,
+    ));
+    agent.player = Some(player_entity);
+    debug!("anim: wired rig for unit {} ({:?})", agent.id, agent.kind);
+}
+
+/// Drive each character's clip from its sim [`Order`] plus real movement.
+///
+/// Locomotion wins over everything (a unit chasing an attack target should
+/// walk, not swing); a stationary unit with an attack order plays its attack
+/// loop; otherwise it idles. Movement is read from the sim position delta and
+/// debounced so it doesn't flicker between 30 Hz sim ticks.
+fn animate_units(
+    time: Res<Time>,
+    sim: Res<Sim>,
+    anims: Res<UnitAnims>,
+    mut agents: Query<&mut AnimAgent>,
+    mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+) {
+    let dt = time.delta_secs();
+    let w = &sim.world;
+
+    for mut agent in &mut agents {
+        let Some(u) = w.unit(agent.id) else { continue };
+
+        // Did the unit cover a meaningful fraction of a full step this frame?
+        let moved = (u.pos - agent.prev_pos).length();
+        agent.prev_pos = u.pos;
+        let step = u.stats.speed * SIM_DT;
+        if moved > step * 0.35 {
+            agent.still = 0.0;
+        } else {
+            agent.still += dt;
+        }
+        let moving = agent.still < MOVE_LATCH;
+
+        let desired = if moving {
+            Clip::Moving
+        } else {
+            match u.order {
+                Order::AttackUnit(_) | Order::AttackBuilding(_) => Clip::Attack,
+                _ => Clip::Idle,
+            }
+        };
+        if desired == agent.current {
+            continue;
+        }
+
+        // Model still streaming in: remember the target so on_unit_scene_ready
+        // starts on the right clip once the rig is wired.
+        let Some(player_entity) = agent.player else {
+            agent.current = desired;
+            continue;
+        };
+        let Some(kind_anim) = anims.0.get(&agent.kind) else {
+            continue;
+        };
+        if let Ok((mut player, mut transitions)) = players.get_mut(player_entity) {
+            transitions
+                .play(&mut player, kind_anim.node(desired), ANIM_CROSSFADE)
+                .repeat();
+            agent.current = desired;
+        }
+    }
 }
 
 /// Target on-field height for a unit line (Bevy units) — used for the
