@@ -1,14 +1,13 @@
 //! Gorgonites - An AI-driven alternate history strategy game
 //!
-//! This crate provides the core game logic for Gorgonites, a strategy game
-//! that blends RTS mechanics, D&D-style narrative, and grand strategy.
+//! This crate provides the core game logic for Gorgonites: a Rise of
+//! Nations-style battle simulation (`game`), the supporting strategy and
+//! narrative systems (`systems`, `ai`), and the Bevy 3D frontend
+//! (`frontend`). The simulation never touches the engine, so it runs
+//! headlessly in tests and the renderer can evolve independently.
 
-pub mod game;
-pub mod ecs;
-pub mod systems;
 pub mod ai;
-pub mod rendering;
-pub mod ui;
 pub mod assets;
-
-pub use game::Game;
+pub mod frontend;
+pub mod game;
+pub mod systems;

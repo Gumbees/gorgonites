@@ -4,7 +4,7 @@
 //! building stock, climb the ages, and throw periodic attack waves at the
 //! player's capital — enough to make borders, attrition, and capture matter.
 
-use macroquad::prelude::*;
+use bevy::math::vec2;
 
 use super::entities::*;
 use super::mapgen::TILE;

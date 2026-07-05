@@ -14,8 +14,8 @@
 //! - **Age advancement**: researched at a city, re-skins and upgrades every
 //!   unit line and pushes your borders outward.
 
-use macroquad::prelude::*;
 use ::rand::Rng;
+use bevy::math::{vec2, Vec2};
 
 use crate::systems::rts::{
     calculate_damage, commerce_cap, ArmorType, Cost, Resource, Stockpile,
@@ -32,9 +32,14 @@ const MIN_CITY_DIST_TILES: i32 = 8;
 // Nations
 // ---------------------------------------------------------------------------
 
+/// Linear-ish RGB triple; the frontend maps this to engine colours.
+pub type Rgb = [f32; 3];
+/// RGBA quad for particle tinting.
+pub type Rgba = [f32; 4];
+
 pub struct Nation {
     pub name: String,
-    pub color: Color,
+    pub color: Rgb,
     /// 0-based age index into `Era::ALL`.
     pub age: usize,
     pub stockpile: Stockpile,
@@ -67,13 +72,15 @@ pub enum ParticleKind {
 }
 
 pub struct Particle {
+    /// Stable id so a frontend can sync engine entities to particles.
+    pub id: Id,
     pub kind: ParticleKind,
     pub pos: Vec2,
     pub vel: Vec2,
     pub life: f32,
     pub max_life: f32,
     pub size: f32,
-    pub color: Color,
+    pub color: Rgba,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +106,9 @@ pub struct World {
     pub particles: Vec<Particle>,
     pub game_time: f32,
     pub winner: Option<usize>,
+    /// Bumped whenever the border grid is recomputed; frontends watch this
+    /// to know when to rebuild territory overlays.
+    pub border_version: u64,
     next_id: Id,
     borders_dirty: bool,
     econ_accum: f32,
@@ -121,6 +131,7 @@ impl World {
             particles: Vec::new(),
             game_time: 0.0,
             winner: None,
+            border_version: 0,
             next_id: 1,
             borders_dirty: true,
             econ_accum: 0.0,
@@ -130,7 +141,7 @@ impl World {
 
         world.nations.push(Nation {
             name: "Federation".to_string(),
-            color: Color::from_rgba(78, 118, 168, 255),
+            color: [0.31, 0.46, 0.66],
             age: 0,
             stockpile: Stockpile::starting(),
             income: [0.0; 6],
@@ -145,7 +156,7 @@ impl World {
         });
         world.nations.push(Nation {
             name: "Crimson Pact".to_string(),
-            color: Color::from_rgba(158, 62, 54, 255),
+            color: [0.62, 0.24, 0.21],
             age: 0,
             stockpile: Stockpile::starting(),
             income: [0.0; 6],
@@ -460,6 +471,7 @@ impl World {
             }
         }
         self.borders_dirty = false;
+        self.border_version += 1;
     }
 
     fn recount_population(&mut self) {
@@ -899,14 +911,16 @@ impl World {
             self.nations[i].kills += k;
         }
         for pos in fx {
+            let pid = self.alloc_id();
             self.particles.push(Particle {
+                id: pid,
                 kind: ParticleKind::Spark,
                 pos,
                 vel: vec2(rng.gen_range(-6.0..6.0), -14.0),
                 life: 0.5,
                 max_life: 0.5,
                 size: 2.0,
-                color: Color::from_rgba(220, 90, 60, 255),
+                color: [0.863, 0.353, 0.235, 1.000],
             });
         }
     }
@@ -1028,45 +1042,53 @@ impl World {
 
     fn spawn_attack_fx(&mut self, from: Vec2, to: Vec2, ranged: bool, rng: &mut impl Rng) {
         if ranged {
+            let pid = self.alloc_id();
             self.particles.push(Particle {
+                id: pid,
                 kind: ParticleKind::Tracer { to },
                 pos: from,
                 vel: Vec2::ZERO,
                 life: 0.12,
                 max_life: 0.12,
                 size: 1.5,
-                color: Color::from_rgba(255, 230, 160, 255),
+                color: [1.000, 0.902, 0.627, 1.000],
             });
+            let pid = self.alloc_id();
             self.particles.push(Particle {
+                id: pid,
                 kind: ParticleKind::Flash,
                 pos: from,
                 vel: Vec2::ZERO,
                 life: 0.08,
                 max_life: 0.08,
                 size: 5.0,
-                color: Color::from_rgba(255, 220, 120, 255),
+                color: [1.000, 0.863, 0.471, 1.000],
             });
         }
+        let pid = self.alloc_id();
         self.particles.push(Particle {
+            id: pid,
             kind: ParticleKind::Blood,
             pos: to + vec2(rng.gen_range(-3.0..3.0), rng.gen_range(-3.0..3.0)),
             vel: vec2(rng.gen_range(-10.0..10.0), rng.gen_range(-18.0..-6.0)),
             life: 0.4,
             max_life: 0.4,
             size: 2.0,
-            color: Color::from_rgba(120, 40, 30, 255),
+            color: [0.471, 0.157, 0.118, 1.000],
         });
     }
 
     fn spawn_smoke(&mut self, pos: Vec2, rng: &mut impl Rng) {
+        let pid = self.alloc_id();
         self.particles.push(Particle {
+            id: pid,
             kind: ParticleKind::Smoke,
             pos,
             vel: vec2(rng.gen_range(-4.0..4.0), rng.gen_range(-22.0..-12.0)),
             life: 1.6,
             max_life: 1.6,
             size: rng.gen_range(4.0..9.0),
-            color: Color::from_rgba(70, 68, 66, 160),
+            color: [0.275, 0.267, 0.259, 0.627],
         });
     }
 

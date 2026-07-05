@@ -6,7 +6,7 @@
 //! - cities are captured, never destroyed; everything else burns
 //! - economic buildings hold citizen worker slots that generate resource *rates*
 
-use macroquad::prelude::*;
+use bevy::math::Vec2;
 
 use crate::systems::rts::{ArmorType, Cost, DamageType, Resource};
 

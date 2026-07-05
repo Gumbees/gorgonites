@@ -4,7 +4,7 @@
 //! the core loops hold together: borders, economy, AI build-up, attrition,
 //! city capture, and the capital countdown.
 
-use macroquad::math::vec2;
+use bevy::math::vec2;
 
 use gorgonites::game::{
     age_up_cost, BuildingKind, Order, QueueItem, UnitKind, World, MAP_H, MAP_W, TILE,

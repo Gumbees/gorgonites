@@ -74,6 +74,7 @@ fn fbm(fx: f32, fy: f32, seed: u32) -> f32 {
 pub struct GameMap {
     pub w: i32,
     pub h: i32,
+    pub seed: u32,
     terrain: Vec<Terrain>,
     oil: Vec<bool>,
 }
@@ -165,9 +166,55 @@ impl GameMap {
         Self {
             w: MAP_W,
             h: MAP_H,
+            seed,
             terrain,
             oil,
         }
+    }
+
+    /// Vertical relief height (3D units) for a tile, derived from its terrain
+    /// class plus per-tile jitter so ridges and shorelines read naturally.
+    /// The mesh, unit placement, and camera all sample this so gameplay and
+    /// visuals never disagree about where the ground is.
+    pub fn elevation_at(&self, x: i32, y: i32) -> f32 {
+        let jitter = hash01(x, y, self.seed ^ 0x51E1) - 0.5;
+        let base = match self.get(x, y) {
+            Terrain::DeepWater => -6.0,
+            Terrain::Water => -2.5,
+            Terrain::Plains => 0.0,
+            Terrain::Grass => 0.6,
+            Terrain::Forest => 1.2,
+            Terrain::Hills => 5.0,
+            Terrain::Mountain => 12.0,
+        };
+        base + jitter * self.relief_jitter(x, y)
+    }
+
+    fn relief_jitter(&self, x: i32, y: i32) -> f32 {
+        match self.get(x, y) {
+            Terrain::Mountain => 6.0,
+            Terrain::Hills => 2.4,
+            Terrain::Forest | Terrain::Grass => 0.8,
+            _ => 0.3,
+        }
+    }
+
+    /// Bilinearly-sampled ground height at a continuous sim position, so units
+    /// and effects sit flush on the sloped mesh between tile centres.
+    pub fn elevation_world(&self, wx: f32, wy: f32) -> f32 {
+        let fx = wx / TILE - 0.5;
+        let fy = wy / TILE - 0.5;
+        let x0 = fx.floor() as i32;
+        let y0 = fy.floor() as i32;
+        let tx = fx - x0 as f32;
+        let ty = fy - y0 as f32;
+        let a = self.elevation_at(x0, y0);
+        let b = self.elevation_at(x0 + 1, y0);
+        let c = self.elevation_at(x0, y0 + 1);
+        let d = self.elevation_at(x0 + 1, y0 + 1);
+        let top = a + (b - a) * tx;
+        let bottom = c + (d - c) * tx;
+        (top + (bottom - top) * ty).max(-2.0)
     }
 
     pub fn in_bounds(&self, x: i32, y: i32) -> bool {
